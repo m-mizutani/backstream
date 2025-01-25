@@ -27,6 +27,7 @@ func Run(ctx context.Context, args []string) error {
 			defer closer()
 
 			ctx = logging.Inject(ctx, logger)
+			logging.SetDefault(logger)
 			return ctx, nil
 		},
 	}

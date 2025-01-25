@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/m-mizutani/backstream/pkg/controller/server"
+	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/utils/logging"
 	"github.com/m-mizutani/goerr/v2"
 	"github.com/urfave/cli/v3"
@@ -30,7 +31,8 @@ func cmdServer() *cli.Command {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			s := server.New()
+			svc := hub.New()
+			s := server.New(svc)
 
 			logging.Extract(ctx).Info("Start server", "addr", addr)
 			if err := http.ListenAndServe(addr, s); err != nil {
