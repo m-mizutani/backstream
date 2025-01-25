@@ -4,6 +4,7 @@ go 1.23.3
 
 require (
 	github.com/fatih/color v1.18.0
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/m-mizutani/clog v0.0.7
 	github.com/m-mizutani/goerr/v2 v2.0.0-alpha.2
@@ -14,7 +15,6 @@ require (
 
 require (
 	github.com/google/go-cmp v0.6.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/k0kubun/pp/v3 v3.2.0 // indirect
 	github.com/m-mizutani/goerr v0.1.11 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
