@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/m-mizutani/backstream/pkg/model"
@@ -63,19 +64,28 @@ func (x *Service) PutResponse(resp *model.Response) {
 func (x *Service) EmitAndWait(req *model.Request) *model.Response {
 	respCh := x.joinRespCh(req.ID)
 
-	x.broadcast(req)
+	if err := x.broadcast(req); err != nil {
+		return nil
+	}
 
 	return <-respCh
 }
 
-func (x *Service) broadcast(req *model.Request) {
+var errNoClient = errors.New("no client")
+
+func (x *Service) broadcast(req *model.Request) error {
 	x.reqChMutex.Lock()
 	defer x.reqChMutex.Unlock()
+
+	if len(x.reqCh) == 0 {
+		return errNoClient
+	}
 
 	for _, ch := range x.reqCh {
 		ch <- req
 	}
 	logging.Default().Debug("broadcasted request", "id", req.ID, "count", len(x.reqCh))
+	return nil
 }
 
 func (x *Service) joinRespCh(id string) chan *model.Response {
