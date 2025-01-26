@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -47,7 +48,7 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Info("received HTTP request", "id", req.ID, "method", r.Method, "url", r.URL)
+	logger.Debug("received HTTP request", "request", req)
 
 	resp := x.svc.EmitAndWait(req)
 	if resp == nil {
@@ -64,7 +65,7 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.Code)
 	_, _ = w.Write(resp.Body)
 
-	logger.Info("sent HTTP response", "id", resp.ID, "code", resp.Code)
+	logger.Info("sent HTTP response", "id", resp.ID, "method", r.Method, "url", r.URL, "code", resp.Code)
 }
 
 func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +101,12 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			logger.Info("received message", "id", resp.ID, "code", resp.Code)
+			logger.Debug("received message", slog.Group("request",
+				slog.Any("id", resp.ID),
+				slog.Any("code", resp.Code),
+				slog.Any("header", resp.Header),
+				slog.Any("body", string(resp.Body)),
+			))
 
 			x.svc.PutResponse(&resp)
 		}

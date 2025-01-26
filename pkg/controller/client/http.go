@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -63,7 +64,13 @@ func (x *Client) Connect(ctx context.Context) error {
 				errCh <- goerr.Wrap(err, "failed to unmarshal message")
 				return
 			}
-			logger.Info("received message", "id", req.ID, "path", req.Path, "method", req.Method)
+			logger.Debug("received message", slog.Group("request",
+				slog.Any("id", req.ID),
+				slog.Any("path", req.Path),
+				slog.Any("method", req.Method),
+				slog.Any("header", req.Header),
+				slog.Any("body", string(req.Body)),
+			))
 
 			resp, err := x.svc.ToLocal(ctx, &req)
 			if err != nil {
@@ -77,7 +84,7 @@ func (x *Client) Connect(ctx context.Context) error {
 				return
 			}
 
-			logger.Info("sending response", "id", resp.ID, "code", resp.Code)
+			logger.Info("sending response", "id", resp.ID, "code", resp.Code, "path", req.Path, "method", req.Method)
 			if err := conn.WriteMessage(websocket.TextMessage, respBody); err != nil {
 				errCh <- goerr.Wrap(err, "failed to write response")
 				return
