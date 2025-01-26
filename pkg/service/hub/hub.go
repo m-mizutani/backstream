@@ -8,6 +8,11 @@ import (
 	"github.com/m-mizutani/backstream/pkg/utils/logging"
 )
 
+const (
+	// channelBufferSize is a buffer size of request channel. It's required to avoid blocking when WebSocket server is slow and disconnected.
+	channelBufferSize = 32
+)
+
 type Service struct {
 	reqCh      map[string]chan *model.Request
 	reqChMutex sync.Mutex
@@ -29,7 +34,7 @@ func (x *Service) Join(clientID string) chan *model.Request {
 	x.reqChMutex.Lock()
 	defer x.reqChMutex.Unlock()
 
-	ch := make(chan *model.Request)
+	ch := make(chan *model.Request, channelBufferSize)
 	x.reqCh[clientID] = ch
 	return ch
 }
