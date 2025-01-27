@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
@@ -35,7 +36,15 @@ func cmdServer() *cli.Command {
 			s := server.New(svc)
 
 			logging.Extract(ctx).Info("Start server", "addr", addr)
-			if err := http.ListenAndServe(addr, s); err != nil {
+
+			server := &http.Server{
+				Addr:         addr,
+				Handler:      s,
+				ReadTimeout:  10 * time.Second,
+				WriteTimeout: 30 * time.Second,
+			}
+
+			if err := server.ListenAndServe(); err != nil {
 				return goerr.Wrap(err, "failed to listen and serve")
 			}
 

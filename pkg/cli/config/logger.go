@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/fatih/color"
+	"github.com/m-mizutani/backstream/pkg/utils/logging"
 	"github.com/m-mizutani/clog"
 	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/masq"
@@ -80,13 +81,15 @@ func (x Logger) New() (*slog.Logger, func(), error) {
 	case "stderr":
 		w = os.Stderr
 	default:
-		file, err := os.OpenFile(x.output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		file, err := os.OpenFile(x.output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {
 			return nil, nil, goerr.Wrap(err, "Failed to open log file", goerr.V("file", x.output))
 		}
 		w = file
 		closer = func() {
-			file.Close()
+			if err := file.Close(); err != nil {
+				logging.Default().Error("failed to close log file", "error", err)
+			}
 		}
 	}
 
