@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -17,6 +18,7 @@ type Logger struct {
 	level  string
 	format string
 	output string
+	stack  bool
 }
 
 func (x *Logger) Flags() []cli.Flag {
@@ -24,6 +26,7 @@ func (x *Logger) Flags() []cli.Flag {
 		&cli.StringFlag{
 			Name:        "log-level",
 			Aliases:     []string{"l"},
+			Category:    "Log",
 			Usage:       "Log level (debug, info, warn, error)",
 			Value:       "info",
 			Sources:     cli.EnvVars("BACKSTREAM_LOG_LEVEL"),
@@ -32,6 +35,7 @@ func (x *Logger) Flags() []cli.Flag {
 		&cli.StringFlag{
 			Name:        "log-format",
 			Aliases:     []string{"f"},
+			Category:    "Log",
 			Usage:       "Log format (json, text)",
 			Value:       "text",
 			Sources:     cli.EnvVars("BACKSTREAM_LOG_FORMAT"),
@@ -40,10 +44,19 @@ func (x *Logger) Flags() []cli.Flag {
 		&cli.StringFlag{
 			Name:        "log-output",
 			Aliases:     []string{"o"},
+			Category:    "Log",
 			Usage:       "Log output (stdout, stderr, file)",
 			Value:       "stdout",
 			Sources:     cli.EnvVars("BACKSTREAM_LOG_OUTPUT"),
 			Destination: &x.output,
+		},
+		&cli.BoolFlag{
+			Name:        "log-stack",
+			Aliases:     []string{"s"},
+			Category:    "Log",
+			Usage:       "Show log stack trace (The option is for console only)",
+			Value:       false,
+			Destination: &x.stack,
 		},
 	}
 }
@@ -52,6 +65,8 @@ func (x Logger) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("level", x.level),
 		slog.String("format", x.format),
+		slog.String("output", x.output),
+		slog.Bool("stack", x.stack),
 	)
 }
 
@@ -97,6 +112,31 @@ func (x Logger) New() (*slog.Logger, func(), error) {
 
 	// Log format
 	var handler slog.Handler
+
+	goerrHook := func(_ []string, attr slog.Attr) *clog.HandleAttr {
+		var attrs []any
+		if err, ok := attr.Value.Any().(error); ok {
+			attrs = append(attrs, slog.Any("msg", fmt.Sprintf("%v", err)))
+
+			if goErr, ok := attr.Value.Any().(*goerr.Error); ok {
+				for k, v := range goErr.Values() {
+					attrs = append(attrs, slog.Any(k, v))
+				}
+
+			}
+
+			newAttr := slog.Group(attr.Key, attrs...)
+			return &clog.HandleAttr{
+				NewAttr: &newAttr,
+			}
+		}
+
+		return nil
+	}
+	if x.stack {
+		goerrHook = clog.GoerrHook
+	}
+
 	switch x.format {
 	case "json":
 		handler = slog.NewJSONHandler(w, &slog.HandlerOptions{
@@ -110,6 +150,7 @@ func (x Logger) New() (*slog.Logger, func(), error) {
 			clog.WithWriter(w),
 			clog.WithLevel(level),
 			clog.WithReplaceAttr(filter),
+			clog.WithAttrHook(goerrHook),
 			clog.WithColorMap(&clog.ColorMap{
 				Level: map[slog.Level]*color.Color{
 					slog.LevelDebug: color.New(color.FgGreen, color.Bold),
