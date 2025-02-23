@@ -36,6 +36,7 @@ func cmdServer() *cli.Command {
 				Name:        "policy",
 				Aliases:     []string{"p"},
 				Usage:       "Directory or file path of auth policy in Rego",
+				Sources:     cli.EnvVars("BACKSTREAM_POLICY"),
 				Destination: &policyPath,
 			},
 		},
