@@ -16,16 +16,30 @@ import (
 	"github.com/m-mizutani/goerr/v2"
 )
 
+type Option func(*Client)
+
 type Client struct {
 	svc    *tunnel.Service
 	srcURL string
+	header http.Header
 }
 
-func New(svc *tunnel.Service, src string) *Client {
-	return &Client{
+func WithHeader(key, value string) Option {
+	return func(x *Client) {
+		x.header.Add(key, value)
+	}
+}
+
+func New(svc *tunnel.Service, src string, opts ...Option) *Client {
+	x := &Client{
 		svc:    svc,
 		srcURL: src,
+		header: http.Header{},
 	}
+	for _, opt := range opts {
+		opt(x)
+	}
+	return x
 }
 
 func (x *Client) Connect(ctx context.Context) error {
@@ -36,9 +50,10 @@ func (x *Client) Connect(ctx context.Context) error {
 		return goerr.Wrap(err, "failed to convert URL")
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
-		"Backstream-Client": []string{"default"},
-	})
+	headers := x.header.Clone()
+	headers.Add("Backstream-Client", "default")
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 
 	if err != nil {
 		return goerr.Wrap(err, "failed to connect")

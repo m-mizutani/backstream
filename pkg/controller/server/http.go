@@ -10,23 +10,47 @@ import (
 	"github.com/m-mizutani/backstream/pkg/model"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/utils/logging"
+	"github.com/m-mizutani/opaq"
 )
+
+type Upgrade func(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error)
 
 type Server struct {
 	svc     *hub.Service
-	upgrade websocket.Upgrader
+	upgrade Upgrade
+	policy  *opaq.Client
 }
 
-func New(svc *hub.Service) *Server {
+func New(svc *hub.Service, opts ...Option) *Server {
 	var upgrade = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
 		},
 	}
 
-	return &Server{
+	x := &Server{
 		svc:     svc,
-		upgrade: upgrade,
+		upgrade: upgrade.Upgrade,
+	}
+
+	for _, opt := range opts {
+		opt(x)
+	}
+
+	return x
+}
+
+type Option func(*Server)
+
+func WithPolicy(policy *opaq.Client) Option {
+	return func(x *Server) {
+		x.policy = policy
+	}
+}
+
+func WithUpgrade(upgrade Upgrade) Option {
+	return func(x *Server) {
+		x.upgrade = upgrade
 	}
 }
 
@@ -68,11 +92,54 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	logger.Info("sent HTTP response", "id", resp.ID, "method", r.Method, "url", r.URL, "code", resp.Code)
 }
 
+type AuthPolicyInput struct {
+	Method string            `json:"method"`
+	Path   string            `json:"path"`
+	Header map[string]string `json:"header"`
+	Remote string            `json:"remote"`
+}
+
+type AuthPolicyOutput struct {
+	Allow bool `json:"allow"`
+}
+
 func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
-	ws, err := x.upgrade.Upgrade(w, r, nil)
+
+	if x.policy != nil {
+		input := AuthPolicyInput{
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Header: make(map[string]string),
+			Remote: r.RemoteAddr,
+		}
+		for k, v := range r.Header {
+			input.Header[k] = v[0]
+		}
+
+		var output AuthPolicyOutput
+		if err := x.policy.Query(r.Context(), "data.auth.client", input, &output); err != nil {
+			logger.Error("failed to call auth policy", "error", err, "input", input)
+			http.Error(w, "failed to call auth policy", http.StatusInternalServerError)
+			return
+		}
+
+		if !output.Allow {
+			logger.Error("auth policy denied", "input", input)
+			http.Error(w, "auth policy denied", http.StatusForbidden)
+			return
+		}
+	}
+
+	ws, err := x.upgrade(w, r, nil)
 	if err != nil {
 		logger.Error("failed to upgrade", "error", err)
+		http.Error(w, "failed to upgrade: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if ws == nil {
+		logger.Error("failed to upgrade")
+		http.Error(w, "failed to upgrade", http.StatusInternalServerError)
 		return
 	}
 	defer ws.Close()

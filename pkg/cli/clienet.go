@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 
 	"github.com/m-mizutani/backstream/pkg/controller/client"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
@@ -13,6 +14,7 @@ func cmdClient() *cli.Command {
 	var (
 		srcURL string
 		dstURL string
+		header []string
 	)
 
 	cmd := &cli.Command{
@@ -35,14 +37,32 @@ func cmdClient() *cli.Command {
 				Required:    true,
 				Destination: &dstURL,
 			},
+			&cli.StringSliceFlag{
+				Name:        "header",
+				Aliases:     []string{"H"},
+				Usage:       "HTTP header, e.g. 'Authorization: Bearer <token>'",
+				Sources:     cli.EnvVars("BACKSTREAM_HEADER"),
+				Destination: &header,
+			},
 		},
 		Usage: "Start backstream client",
 
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			svc := tunnel.New(dstURL)
 
-			c := client.New(svc, srcURL)
+			var options []client.Option
+			for _, h := range header {
+				parts := strings.Split(h, ":")
+				if len(parts) != 2 {
+					return goerr.New("invalid header format", goerr.V("header", h))
+				}
+				options = append(options, client.WithHeader(
+					strings.TrimSpace(parts[0]),
+					strings.TrimSpace(parts[1]),
+				))
+			}
 
+			c := client.New(svc, srcURL, options...)
 			if err := c.Connect(ctx); err != nil {
 				return goerr.Wrap(err, "failed to connect", goerr.V("src", srcURL), goerr.V("dst", dstURL))
 			}

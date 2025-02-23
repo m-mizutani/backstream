@@ -9,12 +9,14 @@ import (
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/utils/logging"
 	"github.com/m-mizutani/goerr/v2"
+	"github.com/m-mizutani/opaq"
 	"github.com/urfave/cli/v3"
 )
 
 func cmdServer() *cli.Command {
 	var (
-		addr string
+		addr       string
+		policyPath string
 	)
 
 	cmd := &cli.Command{
@@ -30,10 +32,26 @@ func cmdServer() *cli.Command {
 				Sources:     cli.EnvVars("BACKSTREAM_ADDR"),
 				Destination: &addr,
 			},
+			&cli.StringFlag{
+				Name:        "policy",
+				Aliases:     []string{"p"},
+				Value:       "./policies",
+				Usage:       "Directory or file path of auth policy in Rego",
+				Destination: &policyPath,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			var serverOptions []server.Option
+			if policyPath != "" {
+				policy, err := opaq.New(opaq.Files(policyPath))
+				if err != nil {
+					return goerr.Wrap(err, "failed to create policy", goerr.V("policy_path", policyPath))
+				}
+				serverOptions = append(serverOptions, server.WithPolicy(policy))
+			}
+
 			svc := hub.New()
-			s := server.New(svc)
+			s := server.New(svc, serverOptions...)
 
 			logging.Extract(ctx).Info("Start server", "addr", addr)
 
