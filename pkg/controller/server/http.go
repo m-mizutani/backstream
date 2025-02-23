@@ -10,6 +10,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/model"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/utils/logging"
+	"github.com/m-mizutani/goerr/v2"
 	"github.com/m-mizutani/opaq"
 )
 
@@ -65,6 +66,13 @@ func (x *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
 
+	if x.policy != nil {
+		if err := checkAuthPolicy(x.policy, r, "data.auth.server"); err != nil {
+			logger.Error("auth policy failed", "error", err)
+			http.Error(w, "auth policy denied", http.StatusForbidden)
+		}
+	}
+
 	req, err := model.NewRequest(r)
 	if err != nil {
 		logging.Extract(r.Context()).Error("failed to create request", "error", err)
@@ -103,30 +111,40 @@ type AuthPolicyOutput struct {
 	Allow bool `json:"allow"`
 }
 
+func checkAuthPolicy(policy *opaq.Client, r *http.Request, query string) error {
+	input := AuthPolicyInput{
+		Method: r.Method,
+		Path:   r.URL.Path,
+		Header: make(map[string]string),
+		Remote: r.RemoteAddr,
+	}
+	for k, v := range r.Header {
+		input.Header[k] = v[0]
+	}
+
+	var output AuthPolicyOutput
+	if err := policy.Query(r.Context(), query, input, &output); err != nil {
+		return err
+	}
+
+	if !output.Allow {
+		return goerr.New("auth denied", goerr.T(model.ErrAuthDenied))
+	}
+
+	return nil
+}
+
 func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
 
 	if x.policy != nil {
-		input := AuthPolicyInput{
-			Method: r.Method,
-			Path:   r.URL.Path,
-			Header: make(map[string]string),
-			Remote: r.RemoteAddr,
-		}
-		for k, v := range r.Header {
-			input.Header[k] = v[0]
-		}
-
-		var output AuthPolicyOutput
-		if err := x.policy.Query(r.Context(), "data.auth.client", input, &output); err != nil {
-			logger.Error("failed to call auth policy", "error", err, "input", input)
-			http.Error(w, "failed to call auth policy", http.StatusInternalServerError)
-			return
-		}
-
-		if !output.Allow {
-			logger.Error("auth policy denied", "input", input)
-			http.Error(w, "auth policy denied", http.StatusForbidden)
+		if err := checkAuthPolicy(x.policy, r, "data.auth.client"); err != nil {
+			logger.Error("auth policy failed", "error", err)
+			if goerr.HasTag(err, model.ErrAuthDenied) {
+				http.Error(w, "auth policy denied", http.StatusForbidden)
+			} else {
+				http.Error(w, "failed auth policy evaluation", http.StatusInternalServerError)
+			}
 			return
 		}
 	}
