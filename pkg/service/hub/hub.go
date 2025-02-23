@@ -6,6 +6,7 @@ import (
 
 	"github.com/m-mizutani/backstream/pkg/model"
 	"github.com/m-mizutani/backstream/pkg/utils/logging"
+	"github.com/m-mizutani/opaq"
 )
 
 const (
@@ -14,6 +15,8 @@ const (
 )
 
 type Service struct {
+	policy *opaq.Client
+
 	reqCh      map[string]chan *model.Request
 	reqChMutex sync.Mutex
 
@@ -21,10 +24,24 @@ type Service struct {
 	respChMutex sync.Mutex
 }
 
-func New() *Service {
-	return &Service{
+func New(opts ...Option) *Service {
+	x := &Service{
 		reqCh:  make(map[string]chan *model.Request),
 		respCh: make(map[string]chan *model.Response),
+	}
+
+	for _, opt := range opts {
+		opt(x)
+	}
+
+	return x
+}
+
+type Option func(*Service)
+
+func WithPolicy(policy *opaq.Client) Option {
+	return func(x *Service) {
+		x.policy = policy
 	}
 }
 
