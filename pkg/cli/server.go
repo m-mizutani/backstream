@@ -16,7 +16,7 @@ import (
 func cmdServer() *cli.Command {
 	var (
 		addr       string
-		policyPath string
+		policyPath []string
 	)
 
 	cmd := &cli.Command{
@@ -32,18 +32,17 @@ func cmdServer() *cli.Command {
 				Sources:     cli.EnvVars("BACKSTREAM_ADDR"),
 				Destination: &addr,
 			},
-			&cli.StringFlag{
+			&cli.StringSliceFlag{
 				Name:        "policy",
 				Aliases:     []string{"p"},
-				Value:       "./policies",
 				Usage:       "Directory or file path of auth policy in Rego",
 				Destination: &policyPath,
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			var serverOptions []server.Option
-			if policyPath != "" {
-				policy, err := opaq.New(opaq.Files(policyPath))
+			if len(policyPath) > 0 {
+				policy, err := opaq.New(opaq.Files(policyPath...))
 				if err != nil {
 					return goerr.Wrap(err, "failed to create policy", goerr.V("policy_path", policyPath))
 				}
