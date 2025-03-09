@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	"github.com/m-mizutani/backstream/pkg/controller/client"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
+	"github.com/m-mizutani/backstream/pkg/utils/logging"
 	"github.com/m-mizutani/goerr/v2"
+	"github.com/m-mizutani/harlog"
 	"github.com/urfave/cli/v3"
 )
 
@@ -15,6 +18,7 @@ func cmdClient() *cli.Command {
 		srcURL string
 		dstURL string
 		header []string
+		output string
 	)
 
 	cmd := &cli.Command{
@@ -44,11 +48,28 @@ func cmdClient() *cli.Command {
 				Sources:     cli.EnvVars("BACKSTREAM_HEADER"),
 				Destination: &header,
 			},
+			&cli.StringFlag{
+				Name:        "output",
+				Aliases:     []string{"o"},
+				Usage:       "Directory to save HAR files",
+				Destination: &output,
+			},
 		},
 		Usage: "Start backstream client",
 
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			svc := tunnel.New(dstURL)
+			var tunnelOptions []tunnel.Option
+			if output != "" {
+				logger := harlog.New(
+					harlog.WithOutputDir(output),
+					harlog.WithLogger(logging.Default()),
+				)
+				httpClient := &http.Client{
+					Transport: logger,
+				}
+				tunnelOptions = append(tunnelOptions, tunnel.WithHTTPClient(httpClient))
+			}
+			svc := tunnel.New(dstURL, tunnelOptions...)
 
 			var options []client.Option
 			for _, h := range header {
