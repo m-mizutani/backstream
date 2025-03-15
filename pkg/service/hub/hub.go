@@ -83,24 +83,24 @@ func (x *Service) PutResponse(resp *model.Response) {
 
 // EmitAndWait emits a request and wait for the response.
 // This function should be called by HTTP server.
-func (x *Service) EmitAndWait(req *model.Request) *model.Response {
+func (x *Service) EmitAndWait(req *model.Request) (*model.Response, error) {
 	respCh := x.joinRespCh(req.ID)
 
 	if err := x.broadcast(req); err != nil {
-		return nil
+		return nil, err
 	}
 
-	return <-respCh
+	return <-respCh, nil
 }
 
-var errNoClient = errors.New("no client")
+var ErrNoClient = errors.New("no client")
 
 func (x *Service) broadcast(req *model.Request) error {
 	x.reqChMutex.Lock()
 	defer x.reqChMutex.Unlock()
 
 	if len(x.reqCh) == 0 {
-		return errNoClient
+		return ErrNoClient
 	}
 
 	for _, ch := range x.reqCh {
