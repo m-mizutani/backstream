@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -17,9 +18,10 @@ import (
 type Upgrade func(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error)
 
 type Server struct {
-	svc     *hub.Service
-	upgrade Upgrade
-	policy  *opaq.Client
+	svc          *hub.Service
+	upgrade      Upgrade
+	policy       *opaq.Client
+	noClientCode int
 }
 
 func New(svc *hub.Service, opts ...Option) *Server {
@@ -30,8 +32,9 @@ func New(svc *hub.Service, opts ...Option) *Server {
 	}
 
 	x := &Server{
-		svc:     svc,
-		upgrade: upgrade.Upgrade,
+		svc:          svc,
+		upgrade:      upgrade.Upgrade,
+		noClientCode: 503, // デフォルト値
 	}
 
 	for _, opt := range opts {
@@ -52,6 +55,12 @@ func WithPolicy(policy *opaq.Client) Option {
 func WithUpgrade(upgrade Upgrade) Option {
 	return func(x *Server) {
 		x.upgrade = upgrade
+	}
+}
+
+func WithNoClientCode(code int64) Option {
+	return func(x *Server) {
+		x.noClientCode = int(code)
 	}
 }
 
@@ -82,10 +91,29 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	logger.Debug("received HTTP request", "request", req)
 
-	resp := x.svc.EmitAndWait(req)
+	resp, err := x.svc.EmitAndWait(req)
+	if err != nil {
+		if errors.Is(err, hub.ErrNoClient) {
+			logging.Extract(r.Context()).Error("no client connected", "error", err)
+			switch {
+			case x.noClientCode == 0:
+				http.Error(w, "no WebSocket client connected", http.StatusServiceUnavailable)
+			case x.noClientCode < 400:
+				w.WriteHeader(x.noClientCode)
+				_, _ = w.Write([]byte("no WebSocket client connected"))
+			default:
+				http.Error(w, "no WebSocket client connected", x.noClientCode)
+			}
+		} else {
+			logging.Extract(r.Context()).Error("failed to get response", "error", err)
+			http.Error(w, "failed to get response", http.StatusInternalServerError)
+		}
+		return
+	}
+
 	if resp == nil {
 		logging.Extract(r.Context()).Error("failed to get response")
-		http.Error(w, "failed to get response", http.StatusInternalServerError)
+		http.Error(w, "no WebSocket client connected", x.noClientCode)
 		return
 	}
 

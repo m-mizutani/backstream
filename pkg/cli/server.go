@@ -15,8 +15,9 @@ import (
 
 func cmdServer() *cli.Command {
 	var (
-		addr       string
-		policyPath []string
+		addr         string
+		policyPath   []string
+		noClientCode int64
 	)
 
 	cmd := &cli.Command{
@@ -39,6 +40,14 @@ func cmdServer() *cli.Command {
 				Sources:     cli.EnvVars("BACKSTREAM_POLICY"),
 				Destination: &policyPath,
 			},
+			&cli.IntFlag{
+				Name:        "code",
+				Aliases:     []string{"c"},
+				Usage:       "HTTP status code when no WebSocket client is connected",
+				Value:       503,
+				Sources:     cli.EnvVars("BACKSTREAM_NO_CLIENT_CODE"),
+				Destination: &noClientCode,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			var serverOptions []server.Option
@@ -49,6 +58,8 @@ func cmdServer() *cli.Command {
 				}
 				serverOptions = append(serverOptions, server.WithPolicy(policy))
 			}
+
+			serverOptions = append(serverOptions, server.WithNoClientCode(noClientCode))
 
 			svc := hub.New()
 			s := server.New(svc, serverOptions...)
