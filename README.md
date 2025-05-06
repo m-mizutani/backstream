@@ -45,6 +45,12 @@ ENTRYPOINT ["/backstream", "serve"]
 
 Let's assume it is deployed to https://backstream-0000000000.asia-northeast1.run.app.
 
+### Install Client
+
+```bash
+% go install github.com/m-mizutani/backstream@latest
+```
+
 ### Run Client
 
 Once deployment is complete, connect to the server as follows:
