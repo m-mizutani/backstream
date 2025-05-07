@@ -12,11 +12,12 @@ import (
 )
 
 type Request struct {
-	ID     string              `json:"id"`
-	Path   string              `json:"path"`
-	Method string              `json:"method"`
-	Body   []byte              `json:"body"`
-	Header map[string][]string `json:"header"`
+	ID     string            `json:"id"`
+	Path   string            `json:"path"`
+	Method string            `json:"method"`
+	Body   []byte            `json:"body"`
+	Remote string            `json:"remote"`
+	Header map[string]string `json:"header"`
 }
 
 func (x *Request) NewHTTPRequest(ctx context.Context, dst string) (*http.Request, error) {
@@ -33,7 +34,10 @@ func (x *Request) NewHTTPRequest(ctx context.Context, dst string) (*http.Request
 		return nil, goerr.Wrap(err, "failed to create http.Request")
 	}
 
-	req.Header = x.Header
+	for k, v := range x.Header {
+		req.Header.Add(k, v)
+	}
+
 	return req, nil
 }
 
@@ -43,12 +47,18 @@ func NewRequest(r *http.Request) (*Request, error) {
 		return nil, goerr.Wrap(err, "Failed to read request body")
 	}
 
+	header := make(map[string]string)
+	for k, v := range r.Header {
+		header[k] = v[0]
+	}
+
 	return &Request{
 		ID:     uuid.New().String(),
 		Path:   r.URL.Path,
 		Method: r.Method,
 		Body:   body,
-		Header: r.Header,
+		Remote: r.RemoteAddr,
+		Header: header,
 	}, nil
 }
 
