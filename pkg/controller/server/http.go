@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -76,7 +77,7 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
 
 	if x.policy != nil {
-		if err := checkAuthPolicy(x.policy, r, "data.auth.server"); err != nil {
+		if err := checkAuthPolicy(r.Context(), x.policy, r, "data.auth.server"); err != nil {
 			logger.Error("auth policy failed", "error", err)
 			http.Error(w, "auth policy denied", http.StatusForbidden)
 		}
@@ -139,7 +140,9 @@ type AuthPolicyOutput struct {
 	Allow bool `json:"allow"`
 }
 
-func checkAuthPolicy(policy *opaq.Client, r *http.Request, query string) error {
+func checkAuthPolicy(ctx context.Context, policy *opaq.Client, r *http.Request, query string) error {
+	logger := logging.Extract(ctx)
+
 	input := AuthPolicyInput{
 		Method: r.Method,
 		Path:   r.URL.Path,
@@ -154,6 +157,7 @@ func checkAuthPolicy(policy *opaq.Client, r *http.Request, query string) error {
 	if err := policy.Query(r.Context(), query, input, &output); err != nil {
 		return err
 	}
+	logger.Debug("auth policy evaluation result", "query", query, "input", input, "output", output)
 
 	if !output.Allow {
 		return goerr.New("auth denied", goerr.T(model.ErrAuthDenied))
@@ -166,7 +170,7 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
 
 	if x.policy != nil {
-		if err := checkAuthPolicy(x.policy, r, "data.auth.client"); err != nil {
+		if err := checkAuthPolicy(r.Context(), x.policy, r, "data.auth.client"); err != nil {
 			logger.Error("auth policy failed", "error", err)
 			if goerr.HasTag(err, model.ErrAuthDenied) {
 				http.Error(w, "auth policy denied", http.StatusForbidden)
