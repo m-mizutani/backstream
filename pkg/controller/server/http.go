@@ -154,7 +154,13 @@ func checkAuthPolicy(ctx context.Context, policy *opaq.Client, r *http.Request, 
 	}
 
 	var output AuthPolicyOutput
-	if err := policy.Query(r.Context(), query, input, &output); err != nil {
+	var options = []opaq.QueryOption{
+		opaq.WithPrintHook(func(ctx context.Context, loc opaq.PrintLocation, msg string) error {
+			logger.Debug("[Rego print] "+msg, "location", loc)
+			return nil
+		}),
+	}
+	if err := policy.Query(r.Context(), query, input, &output, options...); err != nil {
 		return err
 	}
 	logger.Debug("auth policy evaluation result", "query", query, "input", input, "output", output)

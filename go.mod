@@ -11,7 +11,7 @@ require (
 	github.com/m-mizutani/gt v0.0.13
 	github.com/m-mizutani/harlog v0.0.3
 	github.com/m-mizutani/masq v0.1.10
-	github.com/m-mizutani/opaq v0.2.0
+	github.com/m-mizutani/opaq v0.3.0
 	github.com/stretchr/testify v1.10.0
 	github.com/urfave/cli/v3 v3.0.0-beta1
 )
