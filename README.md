@@ -51,6 +51,12 @@ Let's assume it is deployed to https://backstream-0000000000.asia-northeast1.run
 % go install github.com/m-mizutani/backstream@latest
 ```
 
+If you want to install short name `bs`, you can use the following command:
+
+```bash
+% go install github.com/m-mizutani/backstream/cmd/bs@latest
+```
+
 ### Run Client
 
 Once deployment is complete, connect to the server as follows:
