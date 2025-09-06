@@ -114,9 +114,11 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		logger.Info("WebSocket connection established", "id", upgradeReq.ID)
 
-		// Start relay goroutines
+		// Start relaying messages from the user to the backstream client
 		go x.relayUserToClient(r.Context(), wsConn)
-		x.relayClientToUser(r.Context(), wsConn)
+		
+		// Wait for the context to be done, which indicates the connection should be closed
+		<-r.Context().Done()
 
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")
@@ -154,63 +156,6 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 	}
 }
 
-// relayClientToUser relays messages from client to user
-func (x *Server) relayClientToUser(ctx context.Context, wsConn *WebSocketConnection) {
-	logger := logging.Extract(ctx)
-	logger.Debug("Starting client to user relay", "id", wsConn.ID)
-
-	// Join WebSocket message channel
-	wsMsgCh := x.svc.JoinWebSocket(wsConn.ID)
-	defer x.svc.LeaveWebSocket(wsConn.ID)
-
-	for {
-		select {
-		case msg := <-wsMsgCh:
-			// Parse the message to determine type
-			var wsMsg model.WebSocketMessage
-			if err := json.Unmarshal(msg, &wsMsg); err != nil {
-				logger.Error("Failed to unmarshal WebSocket message", "error", err)
-				continue
-			}
-
-			switch wsMsg.Type {
-			case model.MessageTypeWebSocketFrame:
-				// Handle frame from client
-				data, _ := json.Marshal(wsMsg.Data)
-				var frame model.WebSocketFrame
-				if err := json.Unmarshal(data, &frame); err != nil {
-					logger.Error("Failed to unmarshal frame", "error", err)
-					continue
-				}
-
-				// Forward to user if it's for this connection
-				if frame.ConnectionID == wsConn.ID {
-					if err := wsConn.Send(frame.Type, frame.Data); err != nil {
-						logger.Error("Failed to send frame to user", "error", err)
-						return
-					}
-				}
-
-			case model.MessageTypeWebSocketClose:
-				// Handle close from client
-				data, _ := json.Marshal(wsMsg.Data)
-				var close model.WebSocketClose
-				if err := json.Unmarshal(data, &close); err != nil {
-					logger.Error("Failed to unmarshal close", "error", err)
-					continue
-				}
-
-				if close.ConnectionID == wsConn.ID {
-					logger.Info("Closing WebSocket connection", "id", wsConn.ID)
-					return
-				}
-			}
-
-		case <-ctx.Done():
-			return
-		}
-	}
-}
 
 // broadcastWebSocketMessage broadcasts a WebSocket message through the hub
 func (x *Server) broadcastWebSocketMessage(msgType string, data interface{}) error {
