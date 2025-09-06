@@ -96,6 +96,13 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Debug log to see the original URL
+	logger.Debug("incoming HTTP request URL",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"rawQuery", r.URL.RawQuery,
+		"requestURI", r.RequestURI)
+
 	req, err := model.NewRequest(r)
 	if err != nil {
 		logging.Extract(r.Context()).Error("failed to create request", "error", err)
@@ -103,7 +110,10 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Debug("received HTTP request", "request", req)
+	logger.Debug("created request model",
+		"id", req.ID,
+		"path", req.Path,
+		"method", req.Method)
 
 	resp, err := x.svc.EmitAndWait(req)
 	if err != nil {
@@ -290,7 +300,8 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				logger.Error("failed to write message", "error", err)
 				return
 			}
-			logger.Info("sent message", "id", req.ID, "method", req.Method, "path", req.Path)
+			// Log the request being sent to client
+			logger.Info("sent request to client", "id", req.ID, "method", req.Method, "path", req.Path)
 
 		case wsMsg := <-wsMsgCh:
 			// Forward WebSocket messages to client

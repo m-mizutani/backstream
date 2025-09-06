@@ -26,7 +26,19 @@ func (x *Request) NewHTTPRequest(ctx context.Context, dst string) (*http.Request
 		return nil, goerr.Wrap(err, "failed to parse URL", goerr.V("dst", dst))
 	}
 
-	baseURL.Path = x.Path
+	// Parse the path which may include query parameters
+	if x.Path != "" {
+		// Parse the path+query from the request
+		parsedPath, err := url.Parse(x.Path)
+		if err != nil {
+			return nil, goerr.Wrap(err, "failed to parse request path", goerr.V("path", x.Path))
+		}
+
+		// Set path and query separately
+		baseURL.Path = parsedPath.Path
+		baseURL.RawQuery = parsedPath.RawQuery
+	}
+
 	body := io.NopCloser(bytes.NewReader(x.Body))
 
 	req, err := http.NewRequestWithContext(ctx, x.Method, baseURL.String(), body)
@@ -52,9 +64,15 @@ func NewRequest(r *http.Request) (*Request, error) {
 		header[k] = v[0]
 	}
 
+	// Include both path and query string
+	path := r.URL.Path
+	if r.URL.RawQuery != "" {
+		path = path + "?" + r.URL.RawQuery
+	}
+
 	return &Request{
 		ID:     uuid.New().String(),
-		Path:   r.URL.Path,
+		Path:   path,
 		Method: r.Method,
 		Body:   body,
 		Remote: r.RemoteAddr,

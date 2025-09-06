@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -103,9 +104,20 @@ func (x *Client) Connect(ctx context.Context) error {
 				errCh <- goerr.Wrap(err, "failed to unmarshal message")
 				return
 			}
-			logger.Debug("received message", slog.Group("request",
+			// Parse path and query string for logging
+			parsedPath, query := parsePathAndQuery(req.Path)
+
+			// Log at Info level with path and query string separated
+			logger.Info("received request from server",
+				"id", req.ID,
+				"method", req.Method,
+				"path", parsedPath,
+				"query", query)
+
+			logger.Debug("request details", slog.Group("request",
 				slog.Any("id", req.ID),
-				slog.Any("path", req.Path),
+				slog.Any("path", parsedPath),
+				slog.Any("query", query),
 				slog.Any("method", req.Method),
 				slog.Any("header", req.Header),
 				slog.Any("body", string(req.Body)),
@@ -123,7 +135,13 @@ func (x *Client) Connect(ctx context.Context) error {
 				return
 			}
 
-			logger.Info("sending response", "id", resp.ID, "code", resp.Code, "path", req.Path, "method", req.Method)
+			// Log response with path and query string separated
+			logger.Info("sending response to server",
+				"id", resp.ID,
+				"code", resp.Code,
+				"path", parsedPath,
+				"query", query,
+				"method", req.Method)
 			if err := conn.WriteMessage(websocket.TextMessage, respBody); err != nil {
 				errCh <- goerr.Wrap(err, "failed to write response")
 				return
@@ -170,6 +188,14 @@ func convertToWebSocketURL(rawURL string) (string, error) {
 	}
 
 	return parsedURL.String(), nil
+}
+
+// parsePathAndQuery splits a path string into path and query components
+func parsePathAndQuery(fullPath string) (path string, query string) {
+	if idx := strings.Index(fullPath, "?"); idx != -1 {
+		return fullPath[:idx], fullPath[idx+1:]
+	}
+	return fullPath, ""
 }
 
 // handleWebSocketMessage handles WebSocket messages from the server

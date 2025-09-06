@@ -36,7 +36,7 @@ func (lc *LocalWebSocketConnection) Close() error {
 // handleWebSocketUpgradeRequest handles WebSocket upgrade request from server
 func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.WebSocketUpgradeRequest) {
 	logger := logging.Extract(ctx)
-	logger.Info("Received WebSocket upgrade request", "id", req.ID, "path", req.Path)
+	logger.Info("Received WebSocket upgrade request", "id", req.ID, "url", req.Path)
 
 	// Attempt to connect to local WebSocket endpoint
 	localConn, err := x.connectToLocalWebSocket(ctx, req)
