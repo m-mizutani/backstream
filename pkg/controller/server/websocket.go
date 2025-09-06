@@ -120,8 +120,14 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Upgrade the connection
-		conn, err := x.upgrade(w, r, nil)
+		// Prepare response headers from client
+		var responseHeader http.Header
+		if resp.Header != nil {
+			responseHeader = http.Header(resp.Header)
+		}
+		
+		// Upgrade the connection with response headers
+		conn, err := x.upgrade(w, r, responseHeader)
 		if err != nil {
 			logger.Error("Failed to upgrade WebSocket", "error", err)
 			return

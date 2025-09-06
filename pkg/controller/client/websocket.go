@@ -44,7 +44,7 @@ func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.W
 		"headers", req.Header)
 
 	// Attempt to connect to local WebSocket endpoint
-	localConn, err := x.connectToLocalWebSocket(ctx, req)
+	localConn, respHeaders, err := x.connectToLocalWebSocket(ctx, req)
 
 	var resp *model.WebSocketUpgradeResponse
 	if err != nil {
@@ -58,8 +58,9 @@ func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.W
 		go x.relayLocalToServer(ctx, localConn)
 		go x.relayServerToLocal(ctx, localConn)
 
-		resp = model.NewWebSocketUpgradeResponse(req.ID, true, nil, "")
-		logger.Info("Local WebSocket connection established", "id", req.ID)
+		// Include response headers from local WebSocket in the response
+		resp = model.NewWebSocketUpgradeResponse(req.ID, true, respHeaders, "")
+		logger.Info("Local WebSocket connection established", "id", req.ID, "responseHeaders", respHeaders)
 	}
 
 	// Send response back to server
@@ -69,11 +70,12 @@ func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.W
 }
 
 // connectToLocalWebSocket connects to the local WebSocket endpoint
-func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSocketUpgradeRequest) (*LocalWebSocketConnection, error) {
+// Returns the connection and response headers
+func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSocketUpgradeRequest) (*LocalWebSocketConnection, http.Header, error) {
 	// Parse destination URL
 	dstURL, err := url.Parse(x.dstURL)
 	if err != nil {
-		return nil, goerr.Wrap(err, "failed to parse destination URL")
+		return nil, nil, goerr.Wrap(err, "failed to parse destination URL")
 	}
 
 	// Convert HTTP to WebSocket scheme
@@ -85,7 +87,7 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 	default:
 		// Already WebSocket scheme or unsupported
 		if dstURL.Scheme != "ws" && dstURL.Scheme != "wss" {
-			return nil, goerr.New("unsupported scheme", goerr.V("scheme", dstURL.Scheme))
+			return nil, nil, goerr.New("unsupported scheme", goerr.V("scheme", dstURL.Scheme))
 		}
 	}
 
@@ -94,7 +96,7 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 		// Parse the path+query from the request
 		parsedPath, err := url.Parse(req.Path)
 		if err != nil {
-			return nil, goerr.Wrap(err, "failed to parse request path", goerr.V("path", req.Path))
+			return nil, nil, goerr.Wrap(err, "failed to parse request path", goerr.V("path", req.Path))
 		}
 
 		// Set path and query separately
@@ -147,13 +149,19 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 		if resp != nil {
 			logger.Error("WebSocket dial failed with response", "status", resp.StatusCode, "url", dstURL.String())
 		}
-		return nil, goerr.Wrap(err, "failed to dial local WebSocket", goerr.V("url", dstURL.String()))
+		return nil, nil, goerr.Wrap(err, "failed to dial local WebSocket", goerr.V("url", dstURL.String()))
+	}
+
+	// Extract response headers for forwarding
+	var responseHeaders http.Header
+	if resp != nil {
+		responseHeaders = resp.Header
 	}
 
 	return &LocalWebSocketConnection{
 		ID:   req.ID,
 		Conn: conn,
-	}, nil
+	}, responseHeaders, nil
 }
 
 // relayLocalToServer relays messages from local WebSocket to server
