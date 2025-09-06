@@ -62,7 +62,12 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	upgradeReq := model.NewWebSocketUpgradeRequest(r.URL.Path, header, r.RemoteAddr)
+	// Include query string in the path for WebSocket upgrade
+	path := r.URL.Path
+	if r.URL.RawQuery != "" {
+		path = path + "?" + r.URL.RawQuery
+	}
+	upgradeReq := model.NewWebSocketUpgradeRequest(path, header, r.RemoteAddr)
 	logger.Debug("Sending WebSocket upgrade request to client", "id", upgradeReq.ID)
 
 	// Send upgrade request to client and wait for response

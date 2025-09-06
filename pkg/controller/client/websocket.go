@@ -84,8 +84,18 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 		}
 	}
 
-	// Set the path from the request
-	dstURL.Path = req.Path
+	// Parse the path which may include query parameters
+	if req.Path != "" {
+		// Parse the path+query from the request
+		parsedPath, err := url.Parse(req.Path)
+		if err != nil {
+			return nil, goerr.Wrap(err, "failed to parse request path", goerr.V("path", req.Path))
+		}
+
+		// Set path and query separately
+		dstURL.Path = parsedPath.Path
+		dstURL.RawQuery = parsedPath.RawQuery
+	}
 
 	// Prepare headers
 	header := make(http.Header)

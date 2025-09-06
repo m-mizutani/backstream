@@ -76,6 +76,16 @@ func WithNoClientCode(code int64) Option {
 }
 
 func (x *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Log the raw request details at the very beginning
+	logger := logging.Extract(r.Context())
+	logger.Info("ServeHTTP: incoming request",
+		"method", r.Method,
+		"url.path", r.URL.Path,
+		"url.rawQuery", r.URL.RawQuery,
+		"url.string", r.URL.String(),
+		"requestURI", r.RequestURI,
+		"host", r.Host)
+	
 	if r.Header.Get("Backstream-Client") != "" {
 		x.handleWebSocket(w, r)
 	} else if isWebSocketUpgrade(r) {
@@ -96,8 +106,8 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Debug log to see the original URL
-	logger.Debug("incoming HTTP request URL",
+	// Log the original URL at INFO level to debug production issue
+	logger.Info("handleHTTP: incoming HTTP request URL",
 		"method", r.Method,
 		"path", r.URL.Path,
 		"rawQuery", r.URL.RawQuery,
@@ -110,7 +120,7 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Debug("created request model",
+	logger.Info("handleHTTP: created request model",
 		"id", req.ID,
 		"path", req.Path,
 		"method", req.Method)

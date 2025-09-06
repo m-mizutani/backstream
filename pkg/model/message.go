@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/m-mizutani/goerr/v2"
@@ -54,6 +56,13 @@ func (x *Request) NewHTTPRequest(ctx context.Context, dst string) (*http.Request
 }
 
 func NewRequest(r *http.Request) (*Request, error) {
+	// Debug logging for production issue
+	// TODO: Remove after fixing query string issue
+	if r.URL.RawQuery != "" || strings.Contains(r.URL.Path, "auth") {
+		log.Printf("[DEBUG] NewRequest: URL.Path=%s, URL.RawQuery=%s, URL.String=%s, RequestURI=%s",
+			r.URL.Path, r.URL.RawQuery, r.URL.String(), r.RequestURI)
+	}
+	
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, goerr.Wrap(err, "Failed to read request body")

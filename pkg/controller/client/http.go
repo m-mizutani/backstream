@@ -99,6 +99,9 @@ func (x *Client) Connect(ctx context.Context) error {
 			}
 
 			// Otherwise, handle as regular request
+			// Debug: log raw message to see what we received
+			logger.Info("received raw message from server", "message", string(message))
+			
 			var req model.Request
 			if err := json.Unmarshal(message, &req); err != nil {
 				errCh <- goerr.Wrap(err, "failed to unmarshal message")
@@ -112,7 +115,8 @@ func (x *Client) Connect(ctx context.Context) error {
 				"id", req.ID,
 				"method", req.Method,
 				"path", parsedPath,
-				"query", query)
+				"query", query,
+				"raw_path", req.Path)
 
 			logger.Debug("request details", slog.Group("request",
 				slog.Any("id", req.ID),
