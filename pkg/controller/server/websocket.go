@@ -37,13 +37,25 @@ func isWebSocketUpgrade(r *http.Request) bool {
 	connection := r.Header.Get("Connection")
 	upgrade := r.Header.Get("Upgrade")
 
-	return strings.ToLower(connection) == "upgrade" &&
-		strings.ToLower(upgrade) == "websocket"
+	// Check for "upgrade" in Connection header (can be part of a list)
+	hasUpgrade := false
+	for _, v := range strings.Split(strings.ToLower(connection), ",") {
+		if strings.TrimSpace(v) == "upgrade" {
+			hasUpgrade = true
+			break
+		}
+	}
+
+	return hasUpgrade && strings.ToLower(upgrade) == "websocket"
 }
 
 // handleUserWebSocket handles WebSocket connections from end users
 func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
+	logger.Info("Received WebSocket upgrade request", 
+		"path", r.URL.Path,
+		"rawQuery", r.URL.RawQuery,
+		"headers", r.Header)
 
 	// Check auth policy for WebSocket connections
 	if x.policy != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +37,11 @@ func (lc *LocalWebSocketConnection) Close() error {
 // handleWebSocketUpgradeRequest handles WebSocket upgrade request from server
 func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.WebSocketUpgradeRequest) {
 	logger := logging.Extract(ctx)
-	logger.Info("Received WebSocket upgrade request", "id", req.ID, "url", req.Path)
+	logger.Info("Received WebSocket upgrade request", 
+		"id", req.ID, 
+		"path", req.Path,
+		"dstURL", x.dstURL,
+		"headers", req.Header)
 
 	// Attempt to connect to local WebSocket endpoint
 	localConn, err := x.connectToLocalWebSocket(ctx, req)
@@ -97,19 +102,30 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 		dstURL.RawQuery = parsedPath.RawQuery
 	}
 
-	// Prepare headers
+	// Prepare headers - forward most headers from the original request
 	header := make(http.Header)
+	var subprotocols []string
+	
 	for k, v := range req.Header {
-		// Skip hop-by-hop headers and WebSocket specific headers
-		switch k {
-		case "Connection", "Upgrade",
-			"Sec-Websocket-Key", "Sec-WebSocket-Key",
-			"Sec-Websocket-Version", "Sec-WebSocket-Version",
-			"Sec-Websocket-Accept", "Sec-WebSocket-Accept",
-			"Sec-Websocket-Extensions", "Sec-WebSocket-Extensions",
-			"Sec-Websocket-Protocol", "Sec-WebSocket-Protocol":
+		lowerKey := strings.ToLower(k)
+		switch lowerKey {
+		case "upgrade", "connection", "sec-websocket-version", "sec-websocket-key":
+			// These are mandatory WebSocket headers that gorilla sets
+			continue
+		case "sec-websocket-protocol":
+			// Extract subprotocols for the dialer
+			if v != "" {
+				subprotocols = strings.Split(v, ",")
+				for i := range subprotocols {
+					subprotocols[i] = strings.TrimSpace(subprotocols[i])
+				}
+			}
+			continue
+		case "sec-websocket-extensions":
+			// Skip extensions - gorilla will handle this
 			continue
 		default:
+			// Forward all other headers
 			header.Set(k, v)
 		}
 	}
@@ -117,11 +133,21 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 	// Connect to local WebSocket
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+		Subprotocols:      subprotocols,
 	}
 
-	conn, _, err := dialer.DialContext(ctx, dstURL.String(), header)
+	logger := logging.Extract(ctx)
+	logger.Info("Connecting to local WebSocket", 
+		"url", dstURL.String(),
+		"subprotocols", subprotocols,
+		"headers", header)
+	
+	conn, resp, err := dialer.DialContext(ctx, dstURL.String(), header)
 	if err != nil {
-		return nil, goerr.Wrap(err, "failed to dial local WebSocket")
+		if resp != nil {
+			logger.Error("WebSocket dial failed with response", "status", resp.StatusCode, "url", dstURL.String())
+		}
+		return nil, goerr.Wrap(err, "failed to dial local WebSocket", goerr.V("url", dstURL.String()))
 	}
 
 	return &LocalWebSocketConnection{
