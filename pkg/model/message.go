@@ -58,7 +58,7 @@ func (x *Request) NewHTTPRequest(ctx context.Context, dst string) (*http.Request
 func NewRequest(r *http.Request) (*Request, error) {
 	// Debug logging for production issue
 	// TODO: Remove after fixing query string issue
-	if r.URL.RawQuery != "" || strings.Contains(r.URL.Path, "auth") {
+	if r.URL.RawQuery != "" || strings.Contains(r.URL.Path, "auth") || r.RequestURI != "" {
 		log.Printf("[DEBUG] NewRequest: URL.Path=%s, URL.RawQuery=%s, URL.String=%s, RequestURI=%s",
 			r.URL.Path, r.URL.RawQuery, r.URL.String(), r.RequestURI)
 	}
@@ -73,10 +73,11 @@ func NewRequest(r *http.Request) (*Request, error) {
 		header[k] = v[0]
 	}
 
-	// Include both path and query string
+	// Use URL.Query() which is the standard way to handle query parameters
+	// This properly handles URL decoding and is safe in all proxy environments
 	path := r.URL.Path
-	if r.URL.RawQuery != "" {
-		path = path + "?" + r.URL.RawQuery
+	if query := r.URL.Query(); len(query) > 0 {
+		path = path + "?" + query.Encode()
 	}
 
 	return &Request{

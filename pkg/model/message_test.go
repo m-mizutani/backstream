@@ -3,6 +3,7 @@ package model_test
 import (
 	"context"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/m-mizutani/backstream/pkg/model"
@@ -18,8 +19,13 @@ func TestNewRequestWithQueryString(t *testing.T) {
 	modelReq, err := model.NewRequest(req)
 	require.NoError(t, err)
 
-	// The path should include the query string
-	assert.Equal(t, "/search?q=test&page=1", modelReq.Path)
+	// Parse the path to verify query parameters are preserved
+	parsedURL, err := url.Parse(modelReq.Path)
+	require.NoError(t, err)
+	
+	assert.Equal(t, "/search", parsedURL.Path)
+	assert.Equal(t, "test", parsedURL.Query().Get("q"))
+	assert.Equal(t, "1", parsedURL.Query().Get("page"))
 }
 
 func TestNewRequestWithoutQueryString(t *testing.T) {
