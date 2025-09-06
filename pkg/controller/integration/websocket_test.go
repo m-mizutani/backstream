@@ -65,13 +65,21 @@ func TestWebSocketEndToEnd(t *testing.T) {
 	tunnelSvc := tunnel.New(localWS.URL)
 	backstreamClient := client.New(tunnelSvc, backstreamServer.URL, localWS.URL)
 
+	// Start monitoring for connection before starting the client
+	connectionWait := waitForClientConnection(t, backstreamServer.URL)
+	
 	clientErr := make(chan error, 1)
 	go func() {
 		clientErr <- backstreamClient.Connect(ctx)
 	}()
 
-	// Wait for client to connect
-	time.Sleep(200 * time.Millisecond)
+	// Wait for client to connect with timeout
+	select {
+	case <-connectionWait:
+		t.Logf("Client connected successfully")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for client to connect")
+	}
 
 	// 4. Connect as end user to backstream server
 	wsURL := "ws" + backstreamServer.URL[4:] + "/ws"
@@ -152,11 +160,20 @@ func TestHTTPAndWebSocketCoexistence(t *testing.T) {
 	tunnelSvc := tunnel.New(localServer.URL)
 	backstreamClient := client.New(tunnelSvc, backstreamServer.URL, localServer.URL)
 
+	// Start monitoring for connection before starting the client
+	connectionWait := waitForClientConnection(t, backstreamServer.URL)
+	
 	go func() {
 		_ = backstreamClient.Connect(ctx)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	// Wait for client to connect with timeout
+	select {
+	case <-connectionWait:
+		t.Logf("Client connected successfully")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for client to connect")
+	}
 
 	// Test HTTP request
 	httpResp, err := http.Get(backstreamServer.URL + "/api/test")
