@@ -22,12 +22,17 @@ type Service struct {
 
 	respCh      map[string]chan *model.Response
 	respChMutex sync.Mutex
+
+	// For WebSocket message broadcasting
+	wsMsgCh      map[string]chan []byte
+	wsMsgChMutex sync.Mutex
 }
 
 func New(opts ...Option) *Service {
 	x := &Service{
-		reqCh:  make(map[string]chan *model.Request),
-		respCh: make(map[string]chan *model.Response),
+		reqCh:   make(map[string]chan *model.Request),
+		respCh:  make(map[string]chan *model.Response),
+		wsMsgCh: make(map[string]chan []byte),
 	}
 
 	for _, opt := range opts {
@@ -120,4 +125,47 @@ func (x *Service) joinRespCh(id string) chan *model.Response {
 	logging.Default().Debug("joined response channel", "id", id)
 
 	return ch
+}
+
+// JoinWebSocket joins to receive WebSocket messages
+func (x *Service) JoinWebSocket(clientID string) chan []byte {
+	x.wsMsgChMutex.Lock()
+	defer x.wsMsgChMutex.Unlock()
+
+	ch := make(chan []byte, channelBufferSize)
+	x.wsMsgCh[clientID] = ch
+	return ch
+}
+
+// LeaveWebSocket removes a WebSocket message channel
+func (x *Service) LeaveWebSocket(clientID string) {
+	x.wsMsgChMutex.Lock()
+	defer x.wsMsgChMutex.Unlock()
+
+	if ch, ok := x.wsMsgCh[clientID]; ok {
+		close(ch)
+		delete(x.wsMsgCh, clientID)
+	}
+}
+
+// Broadcast sends a message to all connected WebSocket clients
+func (x *Service) Broadcast(msg []byte) error {
+	x.wsMsgChMutex.Lock()
+	defer x.wsMsgChMutex.Unlock()
+
+	if len(x.wsMsgCh) == 0 {
+		return ErrNoClient
+	}
+
+	for _, ch := range x.wsMsgCh {
+		select {
+		case ch <- msg:
+		default:
+			// Channel is full, skip this client
+			logging.Default().Warn("WebSocket message channel is full, skipping")
+		}
+	}
+
+	logging.Default().Debug("broadcasted WebSocket message", "size", len(msg), "clients", len(x.wsMsgCh))
+	return nil
 }

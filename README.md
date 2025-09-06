@@ -4,10 +4,11 @@ Expose your local applications to the internet with a self-hosted reverse proxy.
 
 ![overview](doc/images/overview.jpg)
 
-The backstream provides a straightforward method to expose your local applications to the internet. It is a self-hosted reverse proxy that allows you to access your local applications from anywhere. It is particularly useful for:
+The backstream provides a straightforward method to expose your local applications to the internet. It is a self-hosted reverse proxy that allows you to access your local applications from anywhere. It supports both HTTP and WebSocket connections, making it particularly useful for:
 
 - **Testing Webhooks from External Services**: By exposing your local applications to the internet, you can test webhooks from external services.
 - **Testing Web Applications on the Internet**: You can test web applications on the internet with your web browser, which is necessary for certain web applications that require internet access.
+- **WebSocket Applications**: Test real-time applications that use WebSocket connections, such as chat applications, live updates, or collaborative tools.
 - **Easy Access to Local Applications with TLS**: Some authentication mechanisms necessitate a TLS connection to your application. You can set up your own TLS server using a cloud platform (e.g., Cloud Run) and backstream.
 
 ## Motivation
@@ -72,6 +73,17 @@ Specify the server URL with `-s` and the URL of the local application you want t
 ```
 
 Now, accessing `https://backstream-0000000000.asia-northeast1.run.app` will forward the request to `http://localhost:8080`, and the response will be returned.
+
+### WebSocket Support
+
+Backstream automatically detects and handles WebSocket upgrade requests. When a client attempts to establish a WebSocket connection to your backstream server, it will:
+
+1. Authenticate the request using the configured `auth.server` policy
+2. Forward the WebSocket upgrade request to your local application
+3. Establish a bidirectional tunnel for WebSocket frames
+4. Handle connection lifecycle and cleanup
+
+Example: If your local application has a WebSocket endpoint at `ws://localhost:8080/ws`, accessing `wss://backstream-0000000000.asia-northeast1.run.app/ws` will establish a WebSocket connection through the tunnel.
 
 ## Authentication & Authorization
 

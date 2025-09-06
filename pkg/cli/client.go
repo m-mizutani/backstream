@@ -83,7 +83,7 @@ func cmdClient() *cli.Command {
 				))
 			}
 
-			c := client.New(svc, srcURL, options...)
+			c := client.New(svc, srcURL, dstURL, options...)
 			if err := c.Connect(ctx); err != nil {
 				return goerr.Wrap(err, "failed to connect", goerr.V("src", srcURL), goerr.V("dst", dstURL))
 			}
