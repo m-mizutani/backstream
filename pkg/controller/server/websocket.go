@@ -36,15 +36,15 @@ func (wc *WebSocketConnection) Close() error {
 func isWebSocketUpgrade(r *http.Request) bool {
 	connection := r.Header.Get("Connection")
 	upgrade := r.Header.Get("Upgrade")
-	
-	return strings.ToLower(connection) == "upgrade" && 
-		   strings.ToLower(upgrade) == "websocket"
+
+	return strings.ToLower(connection) == "upgrade" &&
+		strings.ToLower(upgrade) == "websocket"
 }
 
 // handleUserWebSocket handles WebSocket connections from end users
 func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger := logging.Extract(r.Context())
-	
+
 	// Check auth policy for WebSocket connections
 	if x.policy != nil {
 		if err := checkAuthPolicy(r.Context(), x.policy, r, "data.auth.server"); err != nil {
@@ -53,7 +53,7 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	// Create WebSocket upgrade request
 	header := make(map[string]string)
 	for k, v := range r.Header {
@@ -61,10 +61,10 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			header[k] = v[0]
 		}
 	}
-	
+
 	upgradeReq := model.NewWebSocketUpgradeRequest(r.URL.Path, header, r.RemoteAddr)
 	logger.Debug("Sending WebSocket upgrade request to client", "id", upgradeReq.ID)
-	
+
 	// Send upgrade request to client and wait for response
 	wsMsg := model.NewWebSocketMessage(model.MessageTypeWebSocketUpgradeRequest, upgradeReq)
 	msgData, err := json.Marshal(wsMsg)
@@ -73,22 +73,22 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	
+
 	// Send to hub and wait for response
 	respChan := make(chan *model.WebSocketUpgradeResponse, 1)
 	x.registerUpgradeRequest(upgradeReq.ID, respChan)
 	defer x.unregisterUpgradeRequest(upgradeReq.ID)
-	
+
 	if err := x.svc.Broadcast(msgData); err != nil {
 		logger.Error("Failed to broadcast upgrade request", "error", err)
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	
+
 	// Wait for response with timeout
 	ctx, cancel := context.WithTimeout(r.Context(), upgradeTimeout)
 	defer cancel()
-	
+
 	select {
 	case resp := <-respChan:
 		if !resp.Accepted {
@@ -96,14 +96,14 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "upgrade rejected", http.StatusBadGateway)
 			return
 		}
-		
+
 		// Upgrade the connection
 		conn, err := x.upgrade(w, r, nil)
 		if err != nil {
 			logger.Error("Failed to upgrade WebSocket", "error", err)
 			return
 		}
-		
+
 		// Store the connection
 		wsConn := &WebSocketConnection{
 			ID:   upgradeReq.ID,
@@ -111,13 +111,13 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		x.addWebSocketConnection(upgradeReq.ID, wsConn)
 		defer x.removeWebSocketConnection(upgradeReq.ID)
-		
+
 		logger.Info("WebSocket connection established", "id", upgradeReq.ID)
-		
+
 		// Start relay goroutines
 		go x.relayUserToClient(r.Context(), wsConn)
 		x.relayClientToUser(r.Context(), wsConn)
-		
+
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")
 		http.Error(w, "upgrade timeout", http.StatusGatewayTimeout)
@@ -129,23 +129,28 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnection) {
 	logger := logging.Extract(ctx)
 	defer wsConn.Close()
-	
+
 	for {
 		messageType, data, err := wsConn.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				logger.Error("WebSocket read error", "error", err)
 			}
-			
+
 			// Send close notification
 			closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseAbnormalClosure, err.Error())
-			x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg)
+			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
+				logger.Error("Failed to broadcast close notification", "error", err)
+			}
 			return
 		}
-		
+
 		// Forward frame to client
 		frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
-		x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+		if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+			logger.Error("Failed to forward frame to client", "error", err)
+			return
+		}
 	}
 }
 
@@ -153,11 +158,11 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 func (x *Server) relayClientToUser(ctx context.Context, wsConn *WebSocketConnection) {
 	logger := logging.Extract(ctx)
 	logger.Debug("Starting client to user relay", "id", wsConn.ID)
-	
+
 	// Join WebSocket message channel
 	wsMsgCh := x.svc.JoinWebSocket(wsConn.ID)
 	defer x.svc.LeaveWebSocket(wsConn.ID)
-	
+
 	for {
 		select {
 		case msg := <-wsMsgCh:
@@ -167,7 +172,7 @@ func (x *Server) relayClientToUser(ctx context.Context, wsConn *WebSocketConnect
 				logger.Error("Failed to unmarshal WebSocket message", "error", err)
 				continue
 			}
-			
+
 			switch wsMsg.Type {
 			case model.MessageTypeWebSocketFrame:
 				// Handle frame from client
@@ -177,7 +182,7 @@ func (x *Server) relayClientToUser(ctx context.Context, wsConn *WebSocketConnect
 					logger.Error("Failed to unmarshal frame", "error", err)
 					continue
 				}
-				
+
 				// Forward to user if it's for this connection
 				if frame.ConnectionID == wsConn.ID {
 					if err := wsConn.Send(frame.Type, frame.Data); err != nil {
@@ -185,7 +190,7 @@ func (x *Server) relayClientToUser(ctx context.Context, wsConn *WebSocketConnect
 						return
 					}
 				}
-				
+
 			case model.MessageTypeWebSocketClose:
 				// Handle close from client
 				data, _ := json.Marshal(wsMsg.Data)
@@ -194,13 +199,13 @@ func (x *Server) relayClientToUser(ctx context.Context, wsConn *WebSocketConnect
 					logger.Error("Failed to unmarshal close", "error", err)
 					continue
 				}
-				
+
 				if close.ConnectionID == wsConn.ID {
 					logger.Info("Closing WebSocket connection", "id", wsConn.ID)
 					return
 				}
 			}
-			
+
 		case <-ctx.Done():
 			return
 		}
@@ -214,7 +219,7 @@ func (x *Server) broadcastWebSocketMessage(msgType string, data interface{}) err
 	if err != nil {
 		return goerr.Wrap(err, "failed to marshal WebSocket message")
 	}
-	
+
 	return x.svc.Broadcast(msgData)
 }
 
@@ -259,7 +264,7 @@ func (x *Server) handleWebSocketUpgradeResponse(resp *model.WebSocketUpgradeResp
 	x.upgradeRequestMu.RLock()
 	ch, ok := x.upgradeRequests[resp.ID]
 	x.upgradeRequestMu.RUnlock()
-	
+
 	if ok {
 		select {
 		case ch <- resp:
@@ -274,8 +279,11 @@ func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	if !ok {
 		return
 	}
-	
-	conn.Send(frame.Type, frame.Data)
+
+	if err := conn.Send(frame.Type, frame.Data); err != nil {
+		logger := logging.Default()
+		logger.Error("Failed to send frame to user WebSocket", "error", err)
+	}
 }
 
 // handleWebSocketClose handles WebSocket close from client
@@ -284,7 +292,7 @@ func (x *Server) handleWebSocketClose(close *model.WebSocketClose) {
 	if !ok {
 		return
 	}
-	
+
 	conn.Close()
 	x.removeWebSocketConnection(close.ConnectionID)
 }

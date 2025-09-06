@@ -41,11 +41,11 @@ func New(svc *hub.Service, opts ...Option) *Server {
 	}
 
 	x := &Server{
-		svc:              svc,
-		upgrade:          upgrade.Upgrade,
-		noClientCode:     503, // デフォルト値
-		wsConnections:    make(map[string]*WebSocketConnection),
-		upgradeRequests:  make(map[string]chan *model.WebSocketUpgradeResponse),
+		svc:             svc,
+		upgrade:         upgrade.Upgrade,
+		noClientCode:    503, // デフォルト値
+		wsConnections:   make(map[string]*WebSocketConnection),
+		upgradeRequests: make(map[string]chan *model.WebSocketUpgradeResponse),
 	}
 
 	for _, opt := range opts {
@@ -211,7 +211,7 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	clientID := uuid.New().String()
 	reqCh := x.svc.Join(clientID)
 	defer x.svc.Leave(clientID)
-	
+
 	// Also join WebSocket message channel
 	wsMsgCh := x.svc.JoinWebSocket(clientID)
 	defer x.svc.LeaveWebSocket(clientID)

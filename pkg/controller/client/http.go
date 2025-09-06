@@ -66,7 +66,7 @@ func (x *Client) Connect(ctx context.Context) error {
 		return goerr.Wrap(err, "failed to connect")
 	}
 	defer conn.Close()
-	
+
 	x.connMu.Lock()
 	x.conn = conn
 	x.connMu.Unlock()
@@ -76,7 +76,7 @@ func (x *Client) Connect(ctx context.Context) error {
 	// WebSocket message handling will be done through the connection directly
 
 	errCh := make(chan error)
-	
+
 	// Handle incoming messages from server
 	go func() {
 		defer close(errCh)
@@ -96,7 +96,7 @@ func (x *Client) Connect(ctx context.Context) error {
 				x.handleWebSocketMessage(ctx, &wsMsg)
 				continue
 			}
-			
+
 			// Otherwise, handle as regular request
 			var req model.Request
 			if err := json.Unmarshal(message, &req); err != nil {
@@ -175,7 +175,7 @@ func convertToWebSocketURL(rawURL string) (string, error) {
 // handleWebSocketMessage handles WebSocket messages from the server
 func (x *Client) handleWebSocketMessage(ctx context.Context, wsMsg *model.WebSocketMessage) {
 	logger := logging.Extract(ctx)
-	
+
 	switch wsMsg.Type {
 	case model.MessageTypeWebSocketUpgradeRequest:
 		// Convert data to WebSocketUpgradeRequest
@@ -184,15 +184,15 @@ func (x *Client) handleWebSocketMessage(ctx context.Context, wsMsg *model.WebSoc
 			logger.Error("Failed to marshal WebSocket message data", "error", err)
 			return
 		}
-		
+
 		var req model.WebSocketUpgradeRequest
 		if err := json.Unmarshal(data, &req); err != nil {
 			logger.Error("Failed to unmarshal WebSocket upgrade request", "error", err)
 			return
 		}
-		
+
 		x.handleWebSocketUpgradeRequest(ctx, &req)
-		
+
 	case model.MessageTypeWebSocketFrame:
 		// Convert data to WebSocketFrame
 		data, err := json.Marshal(wsMsg.Data)
@@ -200,15 +200,15 @@ func (x *Client) handleWebSocketMessage(ctx context.Context, wsMsg *model.WebSoc
 			logger.Error("Failed to marshal WebSocket frame data", "error", err)
 			return
 		}
-		
+
 		var frame model.WebSocketFrame
 		if err := json.Unmarshal(data, &frame); err != nil {
 			logger.Error("Failed to unmarshal WebSocket frame", "error", err)
 			return
 		}
-		
+
 		x.handleWebSocketFrame(&frame)
-		
+
 	case model.MessageTypeWebSocketClose:
 		// Convert data to WebSocketClose
 		data, err := json.Marshal(wsMsg.Data)
@@ -216,15 +216,15 @@ func (x *Client) handleWebSocketMessage(ctx context.Context, wsMsg *model.WebSoc
 			logger.Error("Failed to marshal WebSocket close data", "error", err)
 			return
 		}
-		
+
 		var close model.WebSocketClose
 		if err := json.Unmarshal(data, &close); err != nil {
 			logger.Error("Failed to unmarshal WebSocket close", "error", err)
 			return
 		}
-		
+
 		x.handleWebSocketClose(&close)
-		
+
 	default:
 		logger.Warn("Unknown WebSocket message type", "type", wsMsg.Type)
 	}
