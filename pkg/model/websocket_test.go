@@ -76,7 +76,7 @@ func TestWebSocketMessage(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, model.MessageTypeWebSocketFrame, msg.Type)
-	
+
 	// Unmarshal the Data field to verify it contains the frame
 	var unmarshaledFrame model.WebSocketFrame
 	err = json.Unmarshal(msg.Data, &unmarshaledFrame)

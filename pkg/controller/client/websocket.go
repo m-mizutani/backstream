@@ -195,7 +195,7 @@ func (x *Client) sendWebSocketMessage(msgType string, data interface{}) error {
 	if err != nil {
 		return goerr.Wrap(err, "failed to create WebSocket message")
 	}
-	
+
 	msgData, err := json.Marshal(wsMsg)
 	if err != nil {
 		return goerr.Wrap(err, "failed to marshal WebSocket message")

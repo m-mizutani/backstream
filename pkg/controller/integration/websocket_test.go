@@ -67,7 +67,7 @@ func TestWebSocketEndToEnd(t *testing.T) {
 
 	// Start monitoring for connection before starting the client
 	connectionWait := waitForClientConnection(t, backstreamServer.URL)
-	
+
 	clientErr := make(chan error, 1)
 	go func() {
 		clientErr <- backstreamClient.Connect(ctx)
@@ -162,7 +162,7 @@ func TestHTTPAndWebSocketCoexistence(t *testing.T) {
 
 	// Start monitoring for connection before starting the client
 	connectionWait := waitForClientConnection(t, backstreamServer.URL)
-	
+
 	go func() {
 		_ = backstreamClient.Connect(ctx)
 	}()
