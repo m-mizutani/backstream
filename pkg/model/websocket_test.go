@@ -72,10 +72,16 @@ func TestWebSocketClose(t *testing.T) {
 
 func TestWebSocketMessage(t *testing.T) {
 	frame := model.NewWebSocketFrame("conn-1", websocket.TextMessage, []byte("test"))
-	msg := model.NewWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+	msg, err := model.NewWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+	require.NoError(t, err)
 
 	assert.Equal(t, model.MessageTypeWebSocketFrame, msg.Type)
-	assert.Equal(t, frame, msg.Data)
+	
+	// Unmarshal the Data field to verify it contains the frame
+	var unmarshaledFrame model.WebSocketFrame
+	err = json.Unmarshal(msg.Data, &unmarshaledFrame)
+	require.NoError(t, err)
+	assert.Equal(t, frame, &unmarshaledFrame)
 
 	// Test JSON serialization
 	data, err := json.Marshal(msg)

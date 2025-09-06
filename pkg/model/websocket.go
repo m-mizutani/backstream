@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"github.com/google/uuid"
 )
 
@@ -82,14 +83,19 @@ func NewWebSocketClose(connectionID string, code int, reason string) *WebSocketC
 
 // Message wrapper for WebSocket messages
 type WebSocketMessage struct {
-	Type string      `json:"type"`
-	Data interface{} `json:"data"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 // NewWebSocketMessage creates a new WebSocket message wrapper
-func NewWebSocketMessage(msgType string, data interface{}) *WebSocketMessage {
+func NewWebSocketMessage(msgType string, data interface{}) (*WebSocketMessage, error) {
+	// Marshal the data to json.RawMessage
+	rawData, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
 	return &WebSocketMessage{
 		Type: msgType,
-		Data: data,
-	}
+		Data: rawData,
+	}, nil
 }

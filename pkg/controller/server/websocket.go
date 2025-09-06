@@ -66,7 +66,13 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger.Debug("Sending WebSocket upgrade request to client", "id", upgradeReq.ID)
 
 	// Send upgrade request to client and wait for response
-	wsMsg := model.NewWebSocketMessage(model.MessageTypeWebSocketUpgradeRequest, upgradeReq)
+	wsMsg, err := model.NewWebSocketMessage(model.MessageTypeWebSocketUpgradeRequest, upgradeReq)
+	if err != nil {
+		logger.Error("Failed to create WebSocket message", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	
 	msgData, err := json.Marshal(wsMsg)
 	if err != nil {
 		logger.Error("Failed to marshal WebSocket upgrade request", "error", err)
@@ -159,7 +165,11 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 
 // broadcastWebSocketMessage broadcasts a WebSocket message through the hub
 func (x *Server) broadcastWebSocketMessage(msgType string, data interface{}) error {
-	wsMsg := model.NewWebSocketMessage(msgType, data)
+	wsMsg, err := model.NewWebSocketMessage(msgType, data)
+	if err != nil {
+		return goerr.Wrap(err, "failed to create WebSocket message")
+	}
+	
 	msgData, err := json.Marshal(wsMsg)
 	if err != nil {
 		return goerr.Wrap(err, "failed to marshal WebSocket message")

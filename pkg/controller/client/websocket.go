@@ -191,7 +191,11 @@ func (x *Client) handleWebSocketClose(close *model.WebSocketClose) {
 
 // sendWebSocketMessage sends a WebSocket message to the server
 func (x *Client) sendWebSocketMessage(msgType string, data interface{}) error {
-	wsMsg := model.NewWebSocketMessage(msgType, data)
+	wsMsg, err := model.NewWebSocketMessage(msgType, data)
+	if err != nil {
+		return goerr.Wrap(err, "failed to create WebSocket message")
+	}
+	
 	msgData, err := json.Marshal(wsMsg)
 	if err != nil {
 		return goerr.Wrap(err, "failed to marshal WebSocket message")

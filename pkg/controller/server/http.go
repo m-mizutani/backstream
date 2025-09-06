@@ -233,23 +233,28 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				// Handle WebSocket message responses
 				switch wsMsg.Type {
 				case model.MessageTypeWebSocketUpgradeResponse:
-					data, _ := json.Marshal(wsMsg.Data)
 					var resp model.WebSocketUpgradeResponse
-					if err := json.Unmarshal(data, &resp); err == nil {
+					if err := json.Unmarshal(wsMsg.Data, &resp); err != nil {
+						logger.Error("failed to unmarshal WebSocketUpgradeResponse", "error", err)
+					} else {
 						x.handleWebSocketUpgradeResponse(&resp)
 					}
 				case model.MessageTypeWebSocketFrame:
-					data, _ := json.Marshal(wsMsg.Data)
 					var frame model.WebSocketFrame
-					if err := json.Unmarshal(data, &frame); err == nil {
+					if err := json.Unmarshal(wsMsg.Data, &frame); err != nil {
+						logger.Error("failed to unmarshal WebSocketFrame", "error", err)
+					} else {
 						x.handleWebSocketFrame(&frame)
 					}
 				case model.MessageTypeWebSocketClose:
-					data, _ := json.Marshal(wsMsg.Data)
 					var close model.WebSocketClose
-					if err := json.Unmarshal(data, &close); err == nil {
+					if err := json.Unmarshal(wsMsg.Data, &close); err != nil {
+						logger.Error("failed to unmarshal WebSocketClose", "error", err)
+					} else {
 						x.handleWebSocketClose(&close)
 					}
+				default:
+					logger.Warn("unknown WebSocket message type", "type", wsMsg.Type)
 				}
 				continue
 			}
