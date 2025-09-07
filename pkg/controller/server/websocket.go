@@ -132,33 +132,31 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			responseHeader = http.Header(resp.Header)
 		}
 		
+		// Create a temporary connection entry before upgrade to avoid race condition
+		wsCtx, wsCancel := context.WithCancel(context.Background())
+		tempConn := &WebSocketConnection{
+			ID:     upgradeReq.ID,
+			Conn:   nil, // Will be set after upgrade
+			cancel: wsCancel,
+		}
+		x.addWebSocketConnection(upgradeReq.ID, tempConn)
+		
 		// Upgrade the connection with response headers
 		conn, err := x.upgrade(w, r, responseHeader)
 		if err != nil {
 			logger.Error("Failed to upgrade WebSocket", "error", err)
+			x.removeWebSocketConnection(upgradeReq.ID) // Clean up on failure
 			return
 		}
 
-		// Create a new context for WebSocket lifetime management
-		wsCtx, wsCancel := context.WithCancel(context.Background())
-
-		// Store the connection
-		wsConn := &WebSocketConnection{
-			ID:     upgradeReq.ID,
-			Conn:   conn,
-			cancel: wsCancel,
-		}
-		x.addWebSocketConnection(upgradeReq.ID, wsConn)
-		defer x.removeWebSocketConnection(upgradeReq.ID)
-		defer wsCancel()
+		// Update the connection with the actual WebSocket
+		tempConn.Conn = conn
 
 		logger.Info("WebSocket connection established", "id", upgradeReq.ID)
 
 		// Start relaying messages from the user to the backstream client
-		go x.relayUserToClient(wsCtx, wsConn)
-
-		// Wait for the WebSocket context to be done
-		<-wsCtx.Done()
+		// Run synchronously to keep the HTTP handler alive until WebSocket is closed
+		x.relayUserToClient(wsCtx, tempConn)
 
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")
@@ -171,6 +169,7 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnection) {
 	logger := logging.Extract(ctx)
 	defer wsConn.Close()
+	defer x.removeWebSocketConnection(wsConn.ID)
 
 	logger.Debug("Starting user to client relay", "id", wsConn.ID)
 
@@ -328,6 +327,12 @@ func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 		logger.Error("No user WebSocket connection found", 
 			"id", frame.ConnectionID, 
 			"availableConnections", connIDs)
+		return
+	}
+
+	// Check if connection is still being established
+	if conn.Conn == nil {
+		logger.Warn("WebSocket connection not yet fully established, dropping frame", "id", frame.ConnectionID)
 		return
 	}
 
