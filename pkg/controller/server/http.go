@@ -41,6 +41,9 @@ func New(svc *hub.Service, opts ...Option) *Server {
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
+			// Large buffer sizes for development tool (10MB each)
+			ReadBufferSize:  10 * 1024 * 1024, // 10MB
+			WriteBufferSize: 10 * 1024 * 1024, // 10MB
 		}
 		
 		// Dynamically set subprotocols based on the request

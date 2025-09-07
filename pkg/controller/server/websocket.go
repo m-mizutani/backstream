@@ -3,11 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/m-mizutani/backstream/pkg/model"
@@ -313,37 +311,41 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 			}
 			wsConn.mu.Unlock()
 			
-			// Set read deadline to avoid blocking forever
-			wsConn.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			// No read deadline for development tool - let it block
 			messageType, data, err := wsConn.Conn.ReadMessage()
 			
-			// Check if this is a timeout error due to context cancellation
 			if err != nil {
-				// Mark connection as closed to prevent future read attempts
+				
+				// Mark connection as closed only after determining it's a real error
 				wsConn.mu.Lock()
 				wsConn.closed = true
 				wsConn.mu.Unlock()
 				
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// Check if context is done - if so, this is expected
-					select {
-					case <-ctx.Done():
-						logger.Debug("WebSocket read timeout due to context cancellation", "id", wsConn.ID)
-						return
-					default:
-						// Real timeout, continue
-						continue
+				// Check if this is a normal close
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					logger.Debug("User WebSocket closed normally", "id", wsConn.ID)
+					// Forward normal close to client
+					closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseNormalClosure, "connection closed")
+					if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
+						logger.Error("Failed to broadcast close notification", "error", err)
 					}
+					return
 				}
 				
-				// Any read error should terminate the relay to avoid panic
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					logger.Error("WebSocket read error", "error", err)
+				// For development tool, log all errors but don't try to recover from abnormal closure
+				// as it usually means the connection is truly broken
+				if websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
+					logger.Debug("WebSocket abnormal closure", "error", err, "id", wsConn.ID)
+				}
+				
+				// Log unexpected errors
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+					logger.Error("WebSocket unexpected read error", "error", err, "id", wsConn.ID)
 				} else {
-					logger.Debug("User WebSocket closed normally", "error", err)
+					logger.Debug("WebSocket read error", "error", err, "id", wsConn.ID)
 				}
 
-				// Send close notification only for real errors
+				// Send close notification for fatal errors
 				closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseAbnormalClosure, err.Error())
 				if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
 					logger.Error("Failed to broadcast close notification", "error", err)
@@ -351,8 +353,7 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 				return
 			}
 			
-			// Clear read deadline for successful read
-			wsConn.Conn.SetReadDeadline(time.Time{})
+			// No read deadline management needed for development tool
 
 			logger.Debug("Received frame from user WebSocket", 
 				"id", wsConn.ID, 
