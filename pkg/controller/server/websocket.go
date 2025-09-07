@@ -248,17 +248,25 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Configure WebSocket connection for transparent proxying
 		// Disable automatic ping/pong handling to allow transparent forwarding
 		conn.SetPingHandler(func(appData string) error {
-			logger.Info("Received ping from user, forwarding transparently", "id", upgradeReq.ID, "data", appData)
+			logger.Debug("Received ping from user, forwarding transparently", "id", upgradeReq.ID, "data", appData)
 			// Forward ping frame to client instead of responding automatically
 			frame := model.NewWebSocketFrame(upgradeReq.ID, websocket.PingMessage, []byte(appData))
-			return x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+				logger.Error("Failed to forward ping frame", "error", err, "id", upgradeReq.ID)
+			}
+			// Always return nil to prevent connection closure
+			return nil
 		})
 		
 		conn.SetPongHandler(func(appData string) error {
-			logger.Info("Received pong from user, forwarding transparently", "id", upgradeReq.ID, "data", appData)
+			logger.Debug("Received pong from user, forwarding transparently", "id", upgradeReq.ID, "data", appData)
 			// Forward pong frame to client
 			frame := model.NewWebSocketFrame(upgradeReq.ID, websocket.PongMessage, []byte(appData))
-			return x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+				logger.Error("Failed to forward pong frame", "error", err, "id", upgradeReq.ID)
+			}
+			// Always return nil to prevent connection closure
+			return nil
 		})
 		
 		logger.Info("WebSocket connection established", 
@@ -296,6 +304,10 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 		}
 	}()
 
+	// Track if this is the first read attempt after flushing pending frames
+	// Vite HMR client may close connection immediately after receiving "connected" message
+	firstRead := true
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -315,6 +327,16 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 			messageType, data, err := wsConn.Conn.ReadMessage()
 			
 			if err != nil {
+				// Special handling for first read after connection establishment
+				// Vite HMR client sometimes immediately closes after receiving "connected" message
+				if firstRead && websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
+					logger.Debug("Ignoring first read EOF (common with Vite HMR)", "error", err, "id", wsConn.ID)
+					firstRead = false
+					// Try to continue - the connection might actually be fine
+					// Don't mark as closed yet
+					continue
+				}
+				firstRead = false
 				
 				// Mark connection as closed only after determining it's a real error
 				wsConn.mu.Lock()
@@ -352,6 +374,7 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 				}
 				return
 			}
+			firstRead = false
 			
 			// No read deadline management needed for development tool
 
