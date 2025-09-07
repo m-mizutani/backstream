@@ -15,9 +15,10 @@ import (
 
 // WebSocketConnection represents a WebSocket connection
 type WebSocketConnection struct {
-	ID   string
-	Conn *websocket.Conn
-	mu   sync.Mutex
+	ID     string
+	Conn   *websocket.Conn
+	mu     sync.Mutex
+	cancel context.CancelFunc
 }
 
 // Send sends a message through the WebSocket connection
@@ -29,6 +30,9 @@ func (wc *WebSocketConnection) Send(messageType int, data []byte) error {
 
 // Close closes the WebSocket connection
 func (wc *WebSocketConnection) Close() error {
+	if wc.cancel != nil {
+		wc.cancel()
+	}
 	return wc.Conn.Close()
 }
 
@@ -133,21 +137,26 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Create a new context for WebSocket lifetime management
+		wsCtx, wsCancel := context.WithCancel(context.Background())
+
 		// Store the connection
 		wsConn := &WebSocketConnection{
-			ID:   upgradeReq.ID,
-			Conn: conn,
+			ID:     upgradeReq.ID,
+			Conn:   conn,
+			cancel: wsCancel,
 		}
 		x.addWebSocketConnection(upgradeReq.ID, wsConn)
 		defer x.removeWebSocketConnection(upgradeReq.ID)
+		defer wsCancel()
 
 		logger.Info("WebSocket connection established", "id", upgradeReq.ID)
 
 		// Start relaying messages from the user to the backstream client
-		go x.relayUserToClient(r.Context(), wsConn)
+		go x.relayUserToClient(wsCtx, wsConn)
 
-		// Wait for the context to be done, which indicates the connection should be closed
-		<-r.Context().Done()
+		// Wait for the WebSocket context to be done
+		<-wsCtx.Done()
 
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")
@@ -264,22 +273,34 @@ func (x *Server) handleWebSocketUpgradeResponse(resp *model.WebSocketUpgradeResp
 // handleWebSocketFrame handles WebSocket frame from client
 func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	logger := logging.Default()
-	logger.Debug("Handling WebSocket frame from client", 
+	logger.Info("Handling WebSocket frame from client", 
 		"id", frame.ConnectionID, 
 		"type", frame.Type, 
 		"size", len(frame.Data),
 		"data", string(frame.Data))
 
+	// Debug: Log all available connections
+	x.wsConnectionMu.RLock()
+	connIDs := make([]string, 0, len(x.wsConnections))
+	for id := range x.wsConnections {
+		connIDs = append(connIDs, id)
+	}
+	x.wsConnectionMu.RUnlock()
+	logger.Info("Available WebSocket connections", "connectionIDs", connIDs, "lookingFor", frame.ConnectionID)
+
 	conn, ok := x.getWebSocketConnection(frame.ConnectionID)
 	if !ok {
-		logger.Warn("No user WebSocket connection found", "id", frame.ConnectionID)
+		logger.Error("No user WebSocket connection found", 
+			"id", frame.ConnectionID, 
+			"availableConnections", connIDs)
 		return
 	}
 
+	logger.Info("Found WebSocket connection, sending frame", "id", frame.ConnectionID)
 	if err := conn.Send(frame.Type, frame.Data); err != nil {
 		logger.Error("Failed to send frame to user WebSocket", "error", err)
 	} else {
-		logger.Debug("Sent frame to user WebSocket", "id", frame.ConnectionID)
+		logger.Info("Successfully sent frame to user WebSocket", "id", frame.ConnectionID)
 	}
 }
 

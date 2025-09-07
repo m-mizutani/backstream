@@ -17,9 +17,10 @@ import (
 
 // LocalWebSocketConnection represents a connection to local WebSocket endpoint
 type LocalWebSocketConnection struct {
-	ID   string
-	Conn *websocket.Conn
-	mu   sync.Mutex
+	ID     string
+	Conn   *websocket.Conn
+	mu     sync.Mutex
+	cancel context.CancelFunc
 }
 
 // Send sends a message through the local WebSocket connection
@@ -31,6 +32,9 @@ func (lc *LocalWebSocketConnection) Send(messageType int, data []byte) error {
 
 // Close closes the local WebSocket connection
 func (lc *LocalWebSocketConnection) Close() error {
+	if lc.cancel != nil {
+		lc.cancel()
+	}
 	return lc.Conn.Close()
 }
 
@@ -51,12 +55,16 @@ func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.W
 		logger.Error("Failed to connect to local WebSocket", "error", err)
 		resp = model.NewWebSocketUpgradeResponse(req.ID, false, nil, err.Error())
 	} else {
+		// Create a new context for WebSocket lifetime management
+		wsCtx, wsCancel := context.WithCancel(context.Background())
+		localConn.cancel = wsCancel
+
 		// Store the connection
 		x.addLocalWebSocketConnection(req.ID, localConn)
 
 		// Start relay goroutines
-		go x.relayLocalToServer(ctx, localConn)
-		go x.relayServerToLocal(ctx, localConn)
+		go x.relayLocalToServer(wsCtx, localConn)
+		go x.relayServerToLocal(wsCtx, localConn)
 
 		// Include response headers from local WebSocket in the response
 		resp = model.NewWebSocketUpgradeResponse(req.ID, true, respHeaders, "")
