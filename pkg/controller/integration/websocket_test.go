@@ -195,3 +195,161 @@ func TestHTTPAndWebSocketCoexistence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("test"), msg)
 }
+
+// startViteHMRServer simulates a Vite dev server WebSocket endpoint
+func startViteHMRServer(t *testing.T) *httptest.Server {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+		// Accept vite-hmr protocol
+		Subprotocols: []string{"vite-hmr"},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Vite HMR server received request: %s %s", r.Method, r.URL.Path)
+		t.Logf("Headers: %v", r.Header)
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Failed to upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		t.Logf("Vite HMR connection established, subprotocol: %s", conn.Subprotocol())
+
+		// Send initial connected message like Vite does
+		err = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connected"}`))
+		if err != nil {
+			t.Logf("Failed to send connected message: %v", err)
+			return
+		}
+
+		// Keep connection alive and echo messages
+		for {
+			mt, message, err := conn.ReadMessage()
+			if err != nil {
+				t.Logf("Read error: %v", err)
+				return
+			}
+			t.Logf("Vite HMR received: %s", string(message))
+
+			// Echo back
+			if err := conn.WriteMessage(mt, message); err != nil {
+				t.Logf("Write error: %v", err)
+				return
+			}
+		}
+	})
+
+	return httptest.NewServer(mux)
+}
+
+func TestViteHMRProtocolE2E(t *testing.T) {
+	// 1. Start mock Vite HMR server
+	viteServer := startViteHMRServer(t)
+	defer viteServer.Close()
+	t.Logf("Vite HMR server started at: %s", viteServer.URL)
+
+	// 2. Start backstream server
+	hubSvc := hub.New()
+	serverHandler := server.New(hubSvc)
+	backstreamServer := httptest.NewServer(serverHandler)
+	defer backstreamServer.Close()
+	t.Logf("Backstream server started at: %s", backstreamServer.URL)
+
+	// 3. Start backstream client connecting to Vite server
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tunnelSvc := tunnel.New(viteServer.URL)
+	backstreamClient := client.New(tunnelSvc, backstreamServer.URL, viteServer.URL)
+
+	clientErr := make(chan error, 1)
+	go func() {
+		err := backstreamClient.Connect(ctx)
+		if err != nil {
+			t.Logf("Client error: %v", err)
+		}
+		clientErr <- err
+	}()
+
+	// Wait a bit for client to connect
+	time.Sleep(500 * time.Millisecond)
+
+	// 4. Connect as browser with vite-hmr protocol
+	wsURL := "ws" + backstreamServer.URL[4:] + "/"
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+		Subprotocols:     []string{"vite-hmr"}, // Request vite-hmr protocol
+	}
+
+	t.Logf("Connecting to backstream as browser with vite-hmr protocol...")
+	browserConn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Logf("Dial error: %v", err)
+		if resp != nil {
+			t.Logf("Response status: %s", resp.Status)
+			t.Logf("Response headers: %v", resp.Header)
+		}
+	}
+	require.NoError(t, err)
+	defer browserConn.Close()
+
+	// 5. Verify subprotocol was negotiated
+	assert.Equal(t, "vite-hmr", browserConn.Subprotocol(), "Subprotocol should be vite-hmr")
+	t.Logf("Successfully negotiated subprotocol: %s", browserConn.Subprotocol())
+
+	// 6. Read initial connected message
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, err)
+
+	mt, msg, err := browserConn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, websocket.TextMessage, mt)
+	assert.Equal(t, `{"type":"connected"}`, string(msg))
+	t.Logf("Received initial message: %s", string(msg))
+
+	// 7. Send a ping and verify echo
+	testMsg := []byte(`{"type":"ping"}`)
+	err = browserConn.WriteMessage(websocket.TextMessage, testMsg)
+	require.NoError(t, err)
+	t.Logf("Sent ping message")
+
+	// 8. Read echo response
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, err)
+
+	mt, msg, err = browserConn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, websocket.TextMessage, mt)
+	assert.Equal(t, testMsg, msg)
+	t.Logf("Received echo: %s", string(msg))
+
+	// 9. Keep connection alive for a bit to ensure it doesn't close
+	time.Sleep(100 * time.Millisecond)
+
+	// Try another message to verify connection is still alive
+	testMsg2 := []byte(`{"type":"pong"}`)
+	err = browserConn.WriteMessage(websocket.TextMessage, testMsg2)
+	require.NoError(t, err)
+
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, err)
+
+	_, msg, err = browserConn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, testMsg2, msg)
+	t.Logf("Connection still alive, received: %s", string(msg))
+
+	// Clean shutdown
+	cancel()
+	select {
+	case err := <-clientErr:
+		if err != nil && err != context.Canceled {
+			t.Errorf("Client error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Log("Client shutdown timeout")
+	}
+}

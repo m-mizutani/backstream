@@ -150,7 +150,15 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 			responseHeader = http.Header(resp.Header)
 		}
 		
+		// Log subprotocol negotiation details before upgrade
+		requestedProtocols := r.Header.Get("Sec-WebSocket-Protocol")
+		logger.Info("WebSocket subprotocol negotiation", 
+			"id", upgradeReq.ID,
+			"requestedProtocols", requestedProtocols,
+			"responseHeaders", responseHeader)
+
 		// Upgrade the connection with response headers
+		// The upgrade function will handle subprotocol negotiation
 		conn, err := x.upgrade(w, r, responseHeader)
 		if err != nil {
 			logger.Error("Failed to upgrade WebSocket", "error", err)
@@ -161,18 +169,16 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Update the connection with the actual WebSocket
 		tempConn.Conn = conn
 
-		logger.Info("WebSocket connection established", "id", upgradeReq.ID)
+		// Log negotiated subprotocol after upgrade
+		negotiatedProtocol := conn.Subprotocol()
+		logger.Info("WebSocket connection established", 
+			"id", upgradeReq.ID,
+			"negotiatedProtocol", negotiatedProtocol,
+			"requestedProtocols", requestedProtocols)
 
 		// Start relaying messages from the user to the backstream client
-		// Run in goroutine to avoid blocking while keeping handler alive
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			x.relayUserToClient(wsCtx, tempConn)
-		}()
-		
-		// Wait for WebSocket to complete
-		<-done
+		// Handler must block to keep WebSocket connection alive
+		x.relayUserToClient(wsCtx, tempConn)
 
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,15 +35,30 @@ type Server struct {
 }
 
 func New(svc *hub.Service, opts ...Option) *Server {
-	var upgrade = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+	// Create a custom upgrade function that accepts any subprotocol
+	upgradeFunc := func(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error) {
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		}
+		
+		// Dynamically set subprotocols based on the request
+		if protocols := r.Header.Get("Sec-WebSocket-Protocol"); protocols != "" {
+			// Accept any protocol the client requests
+			protocolList := strings.Split(protocols, ",")
+			for i, p := range protocolList {
+				protocolList[i] = strings.TrimSpace(p)
+			}
+			upgrader.Subprotocols = protocolList
+		}
+		
+		return upgrader.Upgrade(w, r, responseHeader)
 	}
 
 	x := &Server{
 		svc:             svc,
-		upgrade:         upgrade.Upgrade,
+		upgrade:         upgradeFunc,
 		noClientCode:    503, // デフォルト値
 		wsConnections:   make(map[string]*WebSocketConnection),
 		upgradeRequests: make(map[string]chan *model.WebSocketUpgradeResponse),
