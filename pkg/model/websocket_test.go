@@ -6,8 +6,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/m-mizutani/backstream/pkg/model"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 func TestWebSocketUpgradeRequest(t *testing.T) {
@@ -18,78 +17,78 @@ func TestWebSocketUpgradeRequest(t *testing.T) {
 
 	req := model.NewWebSocketUpgradeRequest("/ws/test", header, "127.0.0.1:12345")
 
-	assert.NotEmpty(t, req.ID)
-	assert.Equal(t, "/ws/test", req.Path)
-	assert.Equal(t, "Bearer test", req.Header["Authorization"])
-	assert.Equal(t, "127.0.0.1:12345", req.Remote)
+	gt.String(t, req.ID).IsNotEmpty()
+	gt.Value(t, req.Path).Equal("/ws/test")
+	gt.Value(t, req.Header["Authorization"]).Equal("Bearer test")
+	gt.Value(t, req.Remote).Equal("127.0.0.1:12345")
 
 	// Test JSON serialization
 	data, err := json.Marshal(req)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	var decoded model.WebSocketUpgradeRequest
 	err = json.Unmarshal(data, &decoded)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
-	assert.Equal(t, req.ID, decoded.ID)
-	assert.Equal(t, req.Path, decoded.Path)
+	gt.Value(t, decoded.ID).Equal(req.ID)
+	gt.Value(t, decoded.Path).Equal(req.Path)
 }
 
 func TestWebSocketUpgradeResponse(t *testing.T) {
 	// Test accepted response
 	resp := model.NewWebSocketUpgradeResponse("test-id", true, nil, "")
-	assert.Equal(t, "test-id", resp.ID)
-	assert.True(t, resp.Accepted)
-	assert.Empty(t, resp.Error)
+	gt.Value(t, resp.ID).Equal("test-id")
+	gt.Bool(t, resp.Accepted).True()
+	gt.String(t, resp.Error).IsEmpty()
 
 	// Test rejected response
 	resp2 := model.NewWebSocketUpgradeResponse("test-id-2", false, nil, "connection failed")
-	assert.Equal(t, "test-id-2", resp2.ID)
-	assert.False(t, resp2.Accepted)
-	assert.Equal(t, "connection failed", resp2.Error)
+	gt.Value(t, resp2.ID).Equal("test-id-2")
+	gt.Bool(t, resp2.Accepted).False()
+	gt.Value(t, resp2.Error).Equal("connection failed")
 }
 
 func TestWebSocketFrame(t *testing.T) {
 	// Test text frame
 	textFrame := model.NewWebSocketFrame("conn-1", websocket.TextMessage, []byte("hello"))
-	assert.Equal(t, "conn-1", textFrame.ConnectionID)
-	assert.Equal(t, websocket.TextMessage, textFrame.Type)
-	assert.Equal(t, []byte("hello"), textFrame.Data)
+	gt.Value(t, textFrame.ConnectionID).Equal("conn-1")
+	gt.Value(t, textFrame.Type).Equal(websocket.TextMessage)
+	gt.Value(t, textFrame.Data).Equal([]byte("hello"))
 
 	// Test binary frame
 	binaryFrame := model.NewWebSocketFrame("conn-2", websocket.BinaryMessage, []byte{0x01, 0x02, 0x03})
-	assert.Equal(t, "conn-2", binaryFrame.ConnectionID)
-	assert.Equal(t, websocket.BinaryMessage, binaryFrame.Type)
-	assert.Equal(t, []byte{0x01, 0x02, 0x03}, binaryFrame.Data)
+	gt.Value(t, binaryFrame.ConnectionID).Equal("conn-2")
+	gt.Value(t, binaryFrame.Type).Equal(websocket.BinaryMessage)
+	gt.Value(t, binaryFrame.Data).Equal([]byte{0x01, 0x02, 0x03})
 }
 
 func TestWebSocketClose(t *testing.T) {
 	closeMsg := model.NewWebSocketClose("conn-1", websocket.CloseNormalClosure, "goodbye")
-	assert.Equal(t, "conn-1", closeMsg.ConnectionID)
-	assert.Equal(t, websocket.CloseNormalClosure, closeMsg.Code)
-	assert.Equal(t, "goodbye", closeMsg.Reason)
+	gt.Value(t, closeMsg.ConnectionID).Equal("conn-1")
+	gt.Value(t, closeMsg.Code).Equal(websocket.CloseNormalClosure)
+	gt.Value(t, closeMsg.Reason).Equal("goodbye")
 }
 
 func TestWebSocketMessage(t *testing.T) {
 	frame := model.NewWebSocketFrame("conn-1", websocket.TextMessage, []byte("test"))
 	msg, err := model.NewWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
-	assert.Equal(t, model.MessageTypeWebSocketFrame, msg.Type)
+	gt.Value(t, msg.Type).Equal(model.MessageTypeWebSocketFrame)
 
 	// Unmarshal the Data field to verify it contains the frame
 	var unmarshaledFrame model.WebSocketFrame
 	err = json.Unmarshal(msg.Data, &unmarshaledFrame)
-	require.NoError(t, err)
-	assert.Equal(t, frame, &unmarshaledFrame)
+	gt.NoError(t, err).Required()
+	gt.Value(t, &unmarshaledFrame).Equal(frame)
 
 	// Test JSON serialization
 	data, err := json.Marshal(msg)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	var decoded model.WebSocketMessage
 	err = json.Unmarshal(data, &decoded)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
-	assert.Equal(t, msg.Type, decoded.Type)
+	gt.Value(t, decoded.Type).Equal(msg.Type)
 }

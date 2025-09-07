@@ -9,8 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 func TestWebSocketSubprotocolNegotiation(t *testing.T) {
@@ -30,7 +29,7 @@ func TestWebSocketSubprotocolNegotiation(t *testing.T) {
 		"Backstream-Client": []string{"test"},
 	}
 	clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, clientHeader)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer clientConn.Close()
 
 	// Start a goroutine to handle client messages
@@ -80,20 +79,20 @@ func TestWebSocketSubprotocolNegotiation(t *testing.T) {
 			t.Logf("Response headers: %v", resp.Header)
 		}
 	}
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer userConn.Close()
 
 	// Check that the server accepted the subprotocol
-	assert.Equal(t, "vite-hmr", userConn.Subprotocol())
+	gt.Value(t, userConn.Subprotocol()).Equal("vite-hmr")
 	
 	// Try to send a message
 	err = userConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
-	assert.NoError(t, err)
+	gt.NoError(t, err)
 	
 	// Keep connection alive for a bit
 	time.Sleep(100 * time.Millisecond)
 	
 	// Check connection is still alive
 	err = userConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping2"}`))
-	assert.NoError(t, err)
+	gt.NoError(t, err)
 }

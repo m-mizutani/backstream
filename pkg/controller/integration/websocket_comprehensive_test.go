@@ -14,8 +14,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 // TestWebSocketFrameTypes tests all WebSocket frame types according to RFC 6455
@@ -39,24 +38,24 @@ func TestWebSocketFrameTypes(t *testing.T) {
 	t.Run("TextMessage", func(t *testing.T) {
 		testMsg := "Hello WebSocket Text Message!"
 		err := userConn.WriteMessage(websocket.TextMessage, []byte(testMsg))
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		_, response, err := userConn.ReadMessage()
-		require.NoError(t, err)
-		assert.Equal(t, "ECHO_TEXT: "+testMsg, string(response))
+		gt.NoError(t, err).Required()
+		gt.Value(t, string(response)).Equal("ECHO_TEXT: "+testMsg)
 	})
 
 	t.Run("BinaryMessage", func(t *testing.T) {
 		testData := []byte{0x01, 0x02, 0x03, 0x04, 0xFF, 0xFE}
 		err := userConn.WriteMessage(websocket.BinaryMessage, testData)
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		messageType, response, err := userConn.ReadMessage()
-		require.NoError(t, err)
-		assert.Equal(t, websocket.BinaryMessage, messageType)
+		gt.NoError(t, err).Required()
+		gt.Value(t, messageType).Equal(websocket.BinaryMessage)
 		// Server prepends "BINARY:" as bytes
 		expected := append([]byte("BINARY:"), testData...)
-		assert.Equal(t, expected, response)
+		gt.Value(t, response).Equal(expected)
 	})
 
 	t.Run("PingPongFrames", func(t *testing.T) {
@@ -67,7 +66,7 @@ func TestWebSocketFrameTypes(t *testing.T) {
 		// Send ping frame
 		pingData := []byte("ping-payload")
 		err := userConn.WriteMessage(websocket.PingMessage, pingData)
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 		
 		// For transparent proxying, we verify the ping was successfully processed
 		// by sending a normal text message afterwards. If the connection is still
@@ -77,12 +76,12 @@ func TestWebSocketFrameTypes(t *testing.T) {
 		// Send a test message to verify connection is still alive
 		testMsg := "connection-alive-test"
 		err = userConn.WriteMessage(websocket.TextMessage, []byte(testMsg))
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 		
 		// Read response to confirm connection is working
 		_, response, err := userConn.ReadMessage()
-		require.NoError(t, err)
-		assert.Equal(t, "ECHO_TEXT: "+testMsg, string(response))
+		gt.NoError(t, err).Required()
+		gt.Value(t, string(response)).Equal("ECHO_TEXT: "+testMsg)
 		
 		t.Logf("Ping/pong transparent forwarding test passed - connection remains alive")
 	})
@@ -138,7 +137,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 
 	// Verify all connections succeeded
 	for i, success := range results {
-		assert.True(t, success, "Connection %d failed", i)
+		gt.Bool(t, success).True().Describe(fmt.Sprintf("Connection %d failed", i))
 	}
 }
 
@@ -190,21 +189,21 @@ func TestWebSocketSubprotocolNegotiation(t *testing.T) {
 
 			wsURL := "ws" + backstreamServer.URL[4:] + "/subprotocol"
 			conn, resp, err := dialer.Dial(wsURL, nil)
-			require.NoError(t, err)
+			gt.NoError(t, err).Required()
 			defer conn.Close()
 
-			assert.Equal(t, tc.expectedProtocol, conn.Subprotocol())
+			gt.Value(t, conn.Subprotocol()).Equal(tc.expectedProtocol)
 			if tc.expectedProtocol != "" {
-				assert.Equal(t, tc.expectedProtocol, resp.Header.Get("Sec-Websocket-Protocol"))
+				gt.Value(t, resp.Header.Get("Sec-Websocket-Protocol")).Equal(tc.expectedProtocol)
 			}
 
 			// Test communication works
 			err = conn.WriteMessage(websocket.TextMessage, []byte("protocol-test"))
-			require.NoError(t, err)
+			gt.NoError(t, err).Required()
 
 			_, response, err := conn.ReadMessage()
-			require.NoError(t, err)
-			assert.Contains(t, string(response), "protocol-test")
+			gt.NoError(t, err).Required()
+			gt.String(t, string(response)).Contains("protocol-test")
 		})
 	}
 }
@@ -227,19 +226,19 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 		// Send close frame with reason
 		closeMessage := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "test close")
 		err := conn.WriteMessage(websocket.CloseMessage, closeMessage)
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		// Should receive close frame back
 		messageType, closeData, err := conn.ReadMessage()
-		require.NoError(t, err)
-		assert.Equal(t, websocket.CloseMessage, messageType)
+		gt.NoError(t, err).Required()
+		gt.Value(t, messageType).Equal(websocket.CloseMessage)
 
 		// Parse close message manually since ParseCloseMessage may not be available
 		if len(closeData) >= 2 {
 			closeCode := int(closeData[0])<<8 | int(closeData[1])
 			closeText := string(closeData[2:])
-			assert.Equal(t, websocket.CloseNormalClosure, closeCode)
-			assert.Equal(t, "test close", closeText)
+			gt.Value(t, closeCode).Equal(websocket.CloseNormalClosure)
+			gt.Value(t, closeText).Equal("test close")
 		}
 
 		conn.Close()
@@ -250,10 +249,10 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 
 		// Send a message to establish communication
 		err := conn.WriteMessage(websocket.TextMessage, []byte("pre-disconnect"))
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		_, _, err = conn.ReadMessage()
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		// Close without handshake
 		conn.Close()
@@ -283,16 +282,16 @@ func TestWebSocketMessageOrdering(t *testing.T) {
 	for i := 0; i < numMessages; i++ {
 		msg := fmt.Sprintf("message-%03d", i)
 		err := conn.WriteMessage(websocket.TextMessage, []byte(msg))
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 	}
 
 	// Read responses and verify order
 	for i := 0; i < numMessages; i++ {
 		_, response, err := conn.ReadMessage()
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 		
 		expected := fmt.Sprintf("ORDERED: message-%03d", i)
-		assert.Equal(t, expected, string(response), "Message %d out of order", i)
+		gt.String(t, string(response)).Equal(expected).Describe(fmt.Sprintf("Message %d out of order", i))
 	}
 }
 
@@ -327,17 +326,17 @@ func TestWebSocketLargeMessages(t *testing.T) {
 
 			// Send large message
 			err := conn.WriteMessage(websocket.BinaryMessage, testData)
-			require.NoError(t, err)
+			gt.NoError(t, err).Required()
 
 			// Read response
 			messageType, response, err := conn.ReadMessage()
-			require.NoError(t, err)
-			assert.Equal(t, websocket.BinaryMessage, messageType)
+			gt.NoError(t, err).Required()
+			gt.Value(t, messageType).Equal(websocket.BinaryMessage)
 			
 			// Server echoes with size prefix
 			expectedSize := len(testData)
 			actualSize := len(response) - 8 // Remove "SIZE:XXX" prefix
-			assert.Equal(t, expectedSize, actualSize, "Large message size mismatch")
+			gt.Value(t, actualSize).Equal(expectedSize).Describe("Large message size mismatch")
 		})
 	}
 }
@@ -555,6 +554,6 @@ func connectAsEndUser(t *testing.T, backstreamServerURL, path string) *websocket
 	}
 
 	conn, _, err := dialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	return conn
 }

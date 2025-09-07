@@ -12,7 +12,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 // TestWebSocketPingDebug - debug specific ping/pong issue
@@ -92,7 +92,7 @@ func TestWebSocketPingDebug(t *testing.T) {
 	}
 
 	userConn, _, err := dialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer userConn.Close()
 
 	t.Logf("User: Connected to backstream")
@@ -108,18 +108,18 @@ func TestWebSocketPingDebug(t *testing.T) {
 	// Test 1: Send normal text message first
 	t.Logf("User: Sending text message")
 	err = userConn.WriteMessage(websocket.TextMessage, []byte("hello"))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Read response
 	_, response, err := userConn.ReadMessage()
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	t.Logf("User: Received response: %q", string(response))
 
 	// Test 2: Send ping frame
 	t.Logf("User: Sending ping frame")
 	pingData := []byte("test-ping")
 	err = userConn.WriteMessage(websocket.PingMessage, pingData)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Wait for pong response via handler
 	select {

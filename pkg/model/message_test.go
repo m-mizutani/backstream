@@ -7,8 +7,7 @@ import (
 	"testing"
 
 	"github.com/m-mizutani/backstream/pkg/model"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 func TestNewRequestWithQueryString(t *testing.T) {
@@ -17,15 +16,15 @@ func TestNewRequestWithQueryString(t *testing.T) {
 
 	// Create a model.Request from the HTTP request
 	modelReq, err := model.NewRequest(req)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Parse the path to verify query parameters are preserved
 	parsedURL, err := url.Parse(modelReq.Path)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	
-	assert.Equal(t, "/search", parsedURL.Path)
-	assert.Equal(t, "test", parsedURL.Query().Get("q"))
-	assert.Equal(t, "1", parsedURL.Query().Get("page"))
+	gt.Value(t, parsedURL.Path).Equal("/search")
+	gt.Value(t, parsedURL.Query().Get("q")).Equal("test")
+	gt.Value(t, parsedURL.Query().Get("page")).Equal("1")
 }
 
 func TestNewRequestWithoutQueryString(t *testing.T) {
@@ -34,10 +33,10 @@ func TestNewRequestWithoutQueryString(t *testing.T) {
 
 	// Create a model.Request from the HTTP request
 	modelReq, err := model.NewRequest(req)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// The path should be just the path
-	assert.Equal(t, "/users", modelReq.Path)
+	gt.Value(t, modelReq.Path).Equal("/users")
 }
 
 func TestNewHTTPRequestWithQueryString(t *testing.T) {
@@ -51,16 +50,16 @@ func TestNewHTTPRequestWithQueryString(t *testing.T) {
 
 	// Convert to HTTP request
 	httpReq, err := modelReq.NewHTTPRequest(context.Background(), "http://localhost:8080")
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Check the full URL includes query parameters
-	assert.Equal(t, "http://localhost:8080/search?q=test&page=1", httpReq.URL.String())
-	assert.Equal(t, "/search", httpReq.URL.Path)
-	assert.Equal(t, "q=test&page=1", httpReq.URL.RawQuery)
+	gt.Value(t, httpReq.URL.String()).Equal("http://localhost:8080/search?q=test&page=1")
+	gt.Value(t, httpReq.URL.Path).Equal("/search")
+	gt.Value(t, httpReq.URL.RawQuery).Equal("q=test&page=1")
 
 	// Check individual query parameters
-	assert.Equal(t, "test", httpReq.URL.Query().Get("q"))
-	assert.Equal(t, "1", httpReq.URL.Query().Get("page"))
+	gt.Value(t, httpReq.URL.Query().Get("q")).Equal("test")
+	gt.Value(t, httpReq.URL.Query().Get("page")).Equal("1")
 }
 
 func TestNewHTTPRequestWithComplexQueryString(t *testing.T) {
@@ -74,17 +73,17 @@ func TestNewHTTPRequestWithComplexQueryString(t *testing.T) {
 
 	// Convert to HTTP request
 	httpReq, err := modelReq.NewHTTPRequest(context.Background(), "https://api.example.com")
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Check the full URL includes all query parameters
-	assert.Equal(t, "https://api.example.com/api/items?category=books&sort=price&order=asc&filter=new", httpReq.URL.String())
+	gt.Value(t, httpReq.URL.String()).Equal("https://api.example.com/api/items?category=books&sort=price&order=asc&filter=new")
 
 	// Check individual query parameters
 	query := httpReq.URL.Query()
-	assert.Equal(t, "books", query.Get("category"))
-	assert.Equal(t, "price", query.Get("sort"))
-	assert.Equal(t, "asc", query.Get("order"))
-	assert.Equal(t, "new", query.Get("filter"))
+	gt.Value(t, query.Get("category")).Equal("books")
+	gt.Value(t, query.Get("sort")).Equal("price")
+	gt.Value(t, query.Get("order")).Equal("asc")
+	gt.Value(t, query.Get("filter")).Equal("new")
 }
 
 func TestNewHTTPRequestWithEncodedQueryString(t *testing.T) {
@@ -98,10 +97,10 @@ func TestNewHTTPRequestWithEncodedQueryString(t *testing.T) {
 
 	// Convert to HTTP request
 	httpReq, err := modelReq.NewHTTPRequest(context.Background(), "http://localhost:3000")
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Check the query parameters are properly decoded
 	query := httpReq.URL.Query()
-	assert.Equal(t, "hello world", query.Get("q"))
-	assert.Equal(t, "foo&bar", query.Get("tag"))
+	gt.Value(t, query.Get("q")).Equal("hello world")
+	gt.Value(t, query.Get("tag")).Equal("foo&bar")
 }

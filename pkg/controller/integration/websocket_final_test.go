@@ -12,7 +12,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 // TestWebSocketComprehensiveE2E - Final comprehensive test for all WebSocket functionality
@@ -98,7 +98,7 @@ func TestWebSocketComprehensiveE2E(t *testing.T) {
 	}
 
 	userConn, _, err := dialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer userConn.Close()
 
 	t.Logf("User: Connected to backstream")
@@ -107,12 +107,12 @@ func TestWebSocketComprehensiveE2E(t *testing.T) {
 	t.Run("TextMessage", func(t *testing.T) {
 		t.Logf("User: Testing text message")
 		err = userConn.WriteMessage(websocket.TextMessage, []byte("hello"))
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		messageType, response, err := userConn.ReadMessage()
-		require.NoError(t, err)
-		require.Equal(t, websocket.TextMessage, messageType)
-		require.Equal(t, "ECHO: hello", string(response))
+		gt.NoError(t, err).Required()
+		gt.Value(t, messageType).Equal(websocket.TextMessage)
+		gt.Value(t, string(response)).Equal("ECHO: hello")
 		t.Logf("User: Text message test passed")
 	})
 
@@ -121,14 +121,14 @@ func TestWebSocketComprehensiveE2E(t *testing.T) {
 		t.Logf("User: Testing binary message")
 		testData := []byte{0x01, 0x02, 0xFF, 0xFE}
 		err = userConn.WriteMessage(websocket.BinaryMessage, testData)
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		messageType, response, err := userConn.ReadMessage()
-		require.NoError(t, err)
-		require.Equal(t, websocket.BinaryMessage, messageType)
+		gt.NoError(t, err).Required()
+		gt.Value(t, messageType).Equal(websocket.BinaryMessage)
 		
 		expectedResponse := append([]byte("BINARY:"), testData...)
-		require.Equal(t, expectedResponse, response)
+		gt.Value(t, response).Equal(expectedResponse)
 		t.Logf("User: Binary message test passed")
 	})
 
@@ -144,7 +144,7 @@ func TestWebSocketComprehensiveE2E(t *testing.T) {
 		
 		// Send ping
 		err = userConn.WriteMessage(websocket.PingMessage, pingData)
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 		t.Logf("User: Sent ping frame")
 		
 		// For transparent proxying, we just need to verify the ping was forwarded

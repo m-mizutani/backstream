@@ -11,8 +11,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 func TestHTTPProxyWithQueryString(t *testing.T) {
@@ -81,10 +80,10 @@ func TestHTTPProxyWithQueryString(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 	resp, err := httpClient.Get(testURL)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "Query parameters should be forwarded correctly")
+	gt.Value(t, resp.StatusCode).Equal(http.StatusOK).Describe("Query parameters should be forwarded correctly")
 
 	// Clean shutdown
 	cancel()

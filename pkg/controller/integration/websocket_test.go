@@ -13,8 +13,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 // startRealWebSocketServer starts a real WebSocket echo server for testing
@@ -89,21 +88,21 @@ func TestWebSocketEndToEnd(t *testing.T) {
 	}
 
 	userConn, _, err := dialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer userConn.Close()
 
 	// 5. Send message and verify echo
 	testMsg := []byte("Hello WebSocket!")
 	err = userConn.WriteMessage(websocket.TextMessage, testMsg)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// 6. Read echo response with timeout
 	err = userConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	mt, response, err := userConn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, websocket.TextMessage, mt)
-	assert.Equal(t, testMsg, response)
+	gt.NoError(t, err).Required()
+	gt.Value(t, mt).Equal(websocket.TextMessage)
+	gt.Value(t, response).Equal(testMsg)
 
 	// Clean shutdown
 	cancel()
@@ -178,23 +177,23 @@ func TestHTTPAndWebSocketCoexistence(t *testing.T) {
 
 	// Test HTTP request
 	httpResp, err := http.Get(backstreamServer.URL + "/api/test")
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, httpResp.StatusCode)
+	gt.NoError(t, err).Required()
+	gt.Value(t, httpResp.StatusCode).Equal(http.StatusOK)
 
 	// Test WebSocket connection
 	wsURL := "ws" + backstreamServer.URL[4:] + "/ws"
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer conn.Close()
 
 	err = conn.WriteMessage(websocket.TextMessage, []byte("test"))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	err = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	_, msg, err := conn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, []byte("test"), msg)
+	gt.NoError(t, err).Required()
+	gt.Value(t, msg).Equal([]byte("test"))
 }
 
 // startViteHMRServer simulates a Vite dev server WebSocket endpoint
@@ -294,38 +293,38 @@ func TestViteHMRProtocolE2E(t *testing.T) {
 			t.Logf("Response headers: %v", resp.Header)
 		}
 	}
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer browserConn.Close()
 
 	// 5. Verify subprotocol was negotiated
-	assert.Equal(t, "vite-hmr", browserConn.Subprotocol(), "Subprotocol should be vite-hmr")
+	gt.Value(t, browserConn.Subprotocol()).Equal("vite-hmr").Describe("Subprotocol should be vite-hmr")
 	t.Logf("Successfully negotiated subprotocol: %s", browserConn.Subprotocol())
 
 	// 6. Read initial connected message
 	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	mt, msg, err := browserConn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, websocket.TextMessage, mt)
-	assert.Equal(t, `{"type":"connected"}`, string(msg))
+	gt.NoError(t, err).Required()
+	gt.Value(t, mt).Equal(websocket.TextMessage)
+	gt.Value(t, string(msg)).Equal(`{"type":"connected"}`)
 	t.Logf("Received initial message: %s", string(msg))
 
 	// 7. Send a ping and verify pong response
 	pingMsg := []byte(`{"type":"ping"}`)
 	err = browserConn.WriteMessage(websocket.TextMessage, pingMsg)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	t.Logf("Sent ping message")
 
 	// 8. Read pong response
 	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	mt, msg, err = browserConn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, websocket.TextMessage, mt)
+	gt.NoError(t, err).Required()
+	gt.Value(t, mt).Equal(websocket.TextMessage)
 	expectedPong := []byte(`{"type":"pong"}`)
-	assert.Equal(t, expectedPong, msg)
+	gt.Value(t, msg).Equal(expectedPong)
 	t.Logf("Received pong response: %s", string(msg))
 
 	// 9. Keep connection alive for a bit to ensure it doesn't close
@@ -334,14 +333,14 @@ func TestViteHMRProtocolE2E(t *testing.T) {
 	// Try another regular message to verify connection is still alive
 	testMsg2 := []byte(`{"type":"test"}`)
 	err = browserConn.WriteMessage(websocket.TextMessage, testMsg2)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	_, msg, err = browserConn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, testMsg2, msg)
+	gt.NoError(t, err).Required()
+	gt.Value(t, msg).Equal(testMsg2)
 	t.Logf("Connection still alive, received: %s", string(msg))
 
 	// Clean shutdown
@@ -377,7 +376,7 @@ func TestWebSocketPingPongHandling(t *testing.T) {
 		}
 
 		// Verify it's a ping message
-		assert.Equal(t, `{"type":"ping"}`, string(msg))
+		gt.Value(t, string(msg)).Equal(`{"type":"ping"}`)
 
 		// Send confirmation that we received ping but don't respond
 		// The server should handle ping internally and respond with pong
@@ -415,31 +414,31 @@ func TestWebSocketPingPongHandling(t *testing.T) {
 	
 	wsURL := strings.Replace(testBackstreamServer.URL, "http", "ws", 1) + "/"
 	browserConn, resp, err := dialer.Dial(wsURL, nil)
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer browserConn.Close()
 
-	assert.Equal(t, "vite-hmr", resp.Header.Get("Sec-Websocket-Protocol"))
+	gt.Value(t, resp.Header.Get("Sec-Websocket-Protocol")).Equal("vite-hmr")
 
 	// Send ping message
 	err = browserConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	// Should receive pong response
 	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 
 	_, msg, err := browserConn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, `{"type":"pong"}`, string(msg))
+	gt.NoError(t, err).Required()
+	gt.Value(t, string(msg)).Equal(`{"type":"pong"}`)
 
 	// Test multiple ping/pong cycles
 	for i := 0; i < 3; i++ {
 		err = browserConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
-		require.NoError(t, err)
+		gt.NoError(t, err).Required()
 
 		_, msg, err = browserConn.ReadMessage()
-		require.NoError(t, err)
-		assert.Equal(t, `{"type":"pong"}`, string(msg))
+		gt.NoError(t, err).Required()
+		gt.Value(t, string(msg)).Equal(`{"type":"pong"}`)
 	}
 
 	// Clean shutdown

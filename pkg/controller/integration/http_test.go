@@ -11,8 +11,7 @@ import (
 	"github.com/m-mizutani/backstream/pkg/controller/server"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/backstream/pkg/service/tunnel"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/m-mizutani/gt"
 )
 
 // waitForClientConnection waits for the backstream client to connect to the server
@@ -97,10 +96,10 @@ func TestHTTPProxy(t *testing.T) {
 		Timeout: 5 * time.Second,
 	}
 	resp, err := httpClient.Get(backstreamServer.URL + "/test")
-	require.NoError(t, err)
+	gt.NoError(t, err).Required()
 	defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	gt.Value(t, resp.StatusCode).Equal(http.StatusOK)
 
 	// Clean shutdown
 	cancel()
