@@ -290,6 +290,8 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					} else {
 						x.handleWebSocketClose(&close)
 					}
+				// case model.MessageTypeWebSocketHandshake:
+				//   Handshake functionality removed - not needed for transparent proxying
 				default:
 					logger.Warn("unknown WebSocket message type", "type", wsMsg.Type)
 				}
@@ -343,3 +345,4 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+

@@ -232,6 +232,9 @@ func (x *Client) handleWebSocketMessage(ctx context.Context, wsMsg *model.WebSoc
 		}
 		x.handleWebSocketClose(&close)
 
+	// case model.MessageTypeWebSocketHandshake:
+	//   Handshake functionality removed - not needed for transparent proxying
+
 	default:
 		logger.Warn("Unknown WebSocket message type", "type", wsMsg.Type)
 	}

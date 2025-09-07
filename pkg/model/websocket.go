@@ -11,6 +11,7 @@ const (
 	MessageTypeWebSocketUpgradeResponse = "websocket_upgrade_response"
 	MessageTypeWebSocketFrame           = "websocket_frame"
 	MessageTypeWebSocketClose           = "websocket_close"
+	MessageTypeWebSocketHandshake       = "websocket_handshake"
 )
 
 // WebSocketUpgradeRequest represents a request to upgrade to WebSocket
@@ -78,6 +79,20 @@ func NewWebSocketClose(connectionID string, code int, reason string) *WebSocketC
 		ConnectionID: connectionID,
 		Code:         code,
 		Reason:       reason,
+	}
+}
+
+// WebSocketHandshake represents a request for protocol-specific handshake
+type WebSocketHandshake struct {
+	ConnectionID string `json:"connection_id"`
+	Protocol     string `json:"protocol"`
+}
+
+// NewWebSocketHandshake creates a new WebSocket handshake request
+func NewWebSocketHandshake(connectionID, protocol string) *WebSocketHandshake {
+	return &WebSocketHandshake{
+		ConnectionID: connectionID,
+		Protocol:     protocol,
 	}
 }
 

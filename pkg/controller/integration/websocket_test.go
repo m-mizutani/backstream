@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -310,27 +311,28 @@ func TestViteHMRProtocolE2E(t *testing.T) {
 	assert.Equal(t, `{"type":"connected"}`, string(msg))
 	t.Logf("Received initial message: %s", string(msg))
 
-	// 7. Send a ping and verify echo
-	testMsg := []byte(`{"type":"ping"}`)
-	err = browserConn.WriteMessage(websocket.TextMessage, testMsg)
+	// 7. Send a ping and verify pong response
+	pingMsg := []byte(`{"type":"ping"}`)
+	err = browserConn.WriteMessage(websocket.TextMessage, pingMsg)
 	require.NoError(t, err)
 	t.Logf("Sent ping message")
 
-	// 8. Read echo response
+	// 8. Read pong response
 	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	require.NoError(t, err)
 
 	mt, msg, err = browserConn.ReadMessage()
 	require.NoError(t, err)
 	assert.Equal(t, websocket.TextMessage, mt)
-	assert.Equal(t, testMsg, msg)
-	t.Logf("Received echo: %s", string(msg))
+	expectedPong := []byte(`{"type":"pong"}`)
+	assert.Equal(t, expectedPong, msg)
+	t.Logf("Received pong response: %s", string(msg))
 
 	// 9. Keep connection alive for a bit to ensure it doesn't close
 	time.Sleep(100 * time.Millisecond)
 
-	// Try another message to verify connection is still alive
-	testMsg2 := []byte(`{"type":"pong"}`)
+	// Try another regular message to verify connection is still alive
+	testMsg2 := []byte(`{"type":"test"}`)
 	err = browserConn.WriteMessage(websocket.TextMessage, testMsg2)
 	require.NoError(t, err)
 
@@ -352,4 +354,94 @@ func TestViteHMRProtocolE2E(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Log("Client shutdown timeout")
 	}
+}
+
+func TestWebSocketPingPongHandling(t *testing.T) {
+	// Test ping/pong control message handling specifically
+	viteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"vite-hmr"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			// Don't use t.Errorf in goroutines after test completion
+			return
+		}
+		defer conn.Close()
+
+		// Read first message (ping)
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			// Don't use t.Errorf in goroutines after test completion
+			return
+		}
+
+		// Verify it's a ping message
+		assert.Equal(t, `{"type":"ping"}`, string(msg))
+
+		// Send confirmation that we received ping but don't respond
+		// The server should handle ping internally and respond with pong
+	}))
+	defer viteServer.Close()
+
+	// Create backstream server
+	svc := hub.New()
+	backstreamServer := server.New(svc)
+	testBackstreamServer := httptest.NewServer(backstreamServer)
+	defer testBackstreamServer.Close()
+
+	// Start backstream client
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tunnelSvc := tunnel.New(viteServer.URL)
+	clientInstance := client.New(tunnelSvc, testBackstreamServer.URL, viteServer.URL)
+	clientErr := make(chan error, 1)
+	go func() {
+		err := clientInstance.Connect(ctx)
+		if err != nil {
+			t.Logf("Client error: %v", err)
+		}
+		clientErr <- err
+	}()
+
+	// Wait for client connection
+	time.Sleep(100 * time.Millisecond)
+
+	// Connect as browser
+	dialer := websocket.Dialer{
+		Subprotocols: []string{"vite-hmr"},
+	}
+	
+	wsURL := strings.Replace(testBackstreamServer.URL, "http", "ws", 1) + "/"
+	browserConn, resp, err := dialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	defer browserConn.Close()
+
+	assert.Equal(t, "vite-hmr", resp.Header.Get("Sec-Websocket-Protocol"))
+
+	// Send ping message
+	err = browserConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
+	require.NoError(t, err)
+
+	// Should receive pong response
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, err)
+
+	_, msg, err := browserConn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"pong"}`, string(msg))
+
+	// Test multiple ping/pong cycles
+	for i := 0; i < 3; i++ {
+		err = browserConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
+		require.NoError(t, err)
+
+		_, msg, err = browserConn.ReadMessage()
+		require.NoError(t, err)
+		assert.Equal(t, `{"type":"pong"}`, string(msg))
+	}
+
+	// Clean shutdown
+	cancel()
 }

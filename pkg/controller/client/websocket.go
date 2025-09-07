@@ -28,15 +28,30 @@ type LocalWebSocketConnection struct {
 func (lc *LocalWebSocketConnection) Send(messageType int, data []byte) error {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
+	
+	if lc.Conn == nil {
+		return goerr.New("connection is closed")
+	}
+	
 	return lc.Conn.WriteMessage(messageType, data)
 }
 
 // Close closes the local WebSocket connection
 func (lc *LocalWebSocketConnection) Close() error {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	
 	if lc.cancel != nil {
 		lc.cancel()
 	}
-	return lc.Conn.Close()
+	
+	if lc.Conn != nil {
+		err := lc.Conn.Close()
+		lc.Conn = nil // Set to nil after closing to prevent multiple close attempts
+		return err
+	}
+	
+	return nil
 }
 
 // handleWebSocketUpgradeRequest handles WebSocket upgrade request from server
@@ -161,6 +176,22 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 		return nil, nil, goerr.Wrap(err, "failed to dial local WebSocket", goerr.V("url", dstURL.String()))
 	}
 
+	// Configure WebSocket connection for transparent proxying
+	// Set ping/pong handlers to forward frames transparently instead of auto-responding
+	conn.SetPingHandler(func(appData string) error {
+		logger.Info("Received ping from local WebSocket, forwarding to server", "id", req.ID, "data", appData)
+		// Forward ping frame to server
+		frame := model.NewWebSocketFrame(req.ID, websocket.PingMessage, []byte(appData))
+		return x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+	})
+	
+	conn.SetPongHandler(func(appData string) error {
+		logger.Info("Received pong from local WebSocket, forwarding to server", "id", req.ID, "data", appData)
+		// Forward pong frame to server
+		frame := model.NewWebSocketFrame(req.ID, websocket.PongMessage, []byte(appData))
+		return x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame)
+	})
+
 	// Extract response headers for forwarding
 	var responseHeaders http.Header
 	if resp != nil {
@@ -195,12 +226,27 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 			logger.Debug("Local WebSocket context cancelled, closing relay", "id", localConn.ID)
 			return
 		default:
+			// Check if connection is closed before attempting read
+			localConn.mu.Lock()
+			if localConn.Conn == nil {
+				localConn.mu.Unlock()
+				logger.Debug("Local WebSocket connection already closed, terminating relay", "id", localConn.ID)
+				return
+			}
+			conn := localConn.Conn // Get reference while holding lock
+			localConn.mu.Unlock()
+			
 			// Set read deadline to avoid blocking forever
-			localConn.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			messageType, data, err := localConn.Conn.ReadMessage()
+			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			messageType, data, err := conn.ReadMessage()
 			
 			// Check if this is a timeout error due to context cancellation
 			if err != nil {
+				// Mark connection as closed by setting it to nil to prevent future read attempts
+				localConn.mu.Lock()
+				localConn.Conn = nil
+				localConn.mu.Unlock()
+				
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					// Check if context is done - if so, this is expected
 					select {
@@ -229,7 +275,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 			}
 			
 			// Clear read deadline for successful read
-			localConn.Conn.SetReadDeadline(time.Time{})
+			conn.SetReadDeadline(time.Time{})
 
 			logger.Info("Received frame from local WebSocket", 
 				"id", localConn.ID, 
@@ -237,7 +283,26 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 				"size", len(data),
 				"data", string(data))
 
-			// Forward frame to server
+			// Handle WebSocket control frames according to RFC 6455
+			// For a WebSocket proxy, we should transparently forward control frames
+			switch messageType {
+			case websocket.CloseMessage:
+				// Handle close frame
+				logger.Debug("Received close frame from local WebSocket", "id", localConn.ID)
+				// Forward close message to server and terminate connection
+				frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
+				if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+					logger.Error("Failed to forward close frame to server", "error", err)
+				}
+				return
+			
+			case websocket.PingMessage, websocket.PongMessage:
+				// Ping/pong frames are now handled by SetPingHandler/SetPongHandler
+				// This should not be reached anymore
+				logger.Warn("Unexpected ping/pong frame in ReadMessage loop", "id", localConn.ID, "type", messageType)
+			}
+
+			// Forward data frame to server
 			frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
 			if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
 				logger.Error("Failed to forward frame to server", "error", err)
@@ -281,6 +346,7 @@ func (x *Client) handleWebSocketFrame(frame *model.WebSocketFrame) {
 		logger.Info("Sent frame to local WebSocket", "id", frame.ConnectionID)
 	}
 }
+
 
 // handleWebSocketClose handles WebSocket close from server
 func (x *Client) handleWebSocketClose(close *model.WebSocketClose) {
