@@ -91,6 +91,7 @@ Communication between client and server uses a custom protocol defined in `pkg/m
 - `github.com/urfave/cli/v3` - CLI framework
 - `github.com/m-mizutani/clog` - Structured logging
 - `github.com/m-mizutani/goerr/v2` - Error handling with stack traces
+- `github.com/m-mizutani/gt` - Test framework
 
 ## Testing Approach
 

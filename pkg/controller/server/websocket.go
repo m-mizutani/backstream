@@ -354,7 +354,7 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 			// Clear read deadline for successful read
 			wsConn.Conn.SetReadDeadline(time.Time{})
 
-			logger.Info("Received frame from user WebSocket", 
+			logger.Debug("Received frame from user WebSocket", 
 				"id", wsConn.ID, 
 				"type", messageType, 
 				"size", len(data),
@@ -391,13 +391,13 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 			}
 
 			// Forward data frame to client
-			logger.Info("About to forward frame to client", "id", wsConn.ID, "type", messageType)
+			logger.Debug("About to forward frame to client", "id", wsConn.ID, "type", messageType)
 			frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
 			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
 				logger.Error("Failed to forward frame to client", "error", err)
 				return
 			}
-			logger.Info("Forwarded frame to client", "id", wsConn.ID, "type", messageType)
+			logger.Debug("Forwarded frame to client", "id", wsConn.ID, "type", messageType)
 		}
 	}
 }
@@ -470,7 +470,7 @@ func (x *Server) handleWebSocketUpgradeResponse(resp *model.WebSocketUpgradeResp
 // handleWebSocketFrame handles WebSocket frame from client
 func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	logger := logging.Default()
-	logger.Info("Handling WebSocket frame from client", 
+	logger.Debug("Handling WebSocket frame from client", 
 		"id", frame.ConnectionID, 
 		"type", frame.Type, 
 		"size", len(frame.Data),
@@ -483,7 +483,7 @@ func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 		connIDs = append(connIDs, id)
 	}
 	x.wsConnectionMu.RUnlock()
-	logger.Info("Available WebSocket connections", "connectionIDs", connIDs, "lookingFor", frame.ConnectionID)
+	logger.Debug("Available WebSocket connections", "connectionIDs", connIDs, "lookingFor", frame.ConnectionID)
 
 	conn, ok := x.getWebSocketConnection(frame.ConnectionID)
 	if !ok {
@@ -493,13 +493,13 @@ func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 		return
 	}
 
-	logger.Info("Found WebSocket connection, sending frame", "id", frame.ConnectionID)
+	logger.Debug("Found WebSocket connection, sending frame", "id", frame.ConnectionID)
 	if err := conn.Send(frame.Type, frame.Data); err != nil {
 		logger.Error("Failed to send frame to user WebSocket", "error", err)
 		// Remove the connection if send fails to prevent further attempts
 		x.removeWebSocketConnection(frame.ConnectionID)
 	} else {
-		logger.Info("Successfully sent frame to user WebSocket", "id", frame.ConnectionID)
+		logger.Debug("Successfully sent frame to user WebSocket", "id", frame.ConnectionID)
 	}
 }
 

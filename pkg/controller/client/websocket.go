@@ -277,7 +277,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 			// Clear read deadline for successful read
 			conn.SetReadDeadline(time.Time{})
 
-			logger.Info("Received frame from local WebSocket", 
+			logger.Debug("Received frame from local WebSocket", 
 				"id", localConn.ID, 
 				"type", messageType, 
 				"size", len(data),
@@ -308,7 +308,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 				logger.Error("Failed to forward frame to server", "error", err)
 				return
 			}
-			logger.Info("Forwarded frame to server", "id", localConn.ID)
+			logger.Debug("Forwarded frame to server", "id", localConn.ID)
 		}
 	}
 }
@@ -328,7 +328,7 @@ func (x *Client) relayServerToLocal(ctx context.Context, localConn *LocalWebSock
 // handleWebSocketFrame handles WebSocket frame from server
 func (x *Client) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	logger := logging.Default()
-	logger.Info("Handling WebSocket frame from server", 
+	logger.Debug("Handling WebSocket frame from server", 
 		"id", frame.ConnectionID, 
 		"type", frame.Type, 
 		"size", len(frame.Data),
@@ -343,7 +343,7 @@ func (x *Client) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	if err := conn.Send(frame.Type, frame.Data); err != nil {
 		logger.Error("Failed to send frame to local WebSocket", "error", err)
 	} else {
-		logger.Info("Sent frame to local WebSocket", "id", frame.ConnectionID)
+		logger.Debug("Sent frame to local WebSocket", "id", frame.ConnectionID)
 	}
 }
 

@@ -83,7 +83,7 @@ func (x *Client) Connect(ctx context.Context) error {
 		defer close(errCh)
 
 		for {
-			logger.Info("waiting for message")
+			logger.Debug("waiting for message")
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				logging.Default().Error("failed to read message", "error", err)
