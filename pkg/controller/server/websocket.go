@@ -161,11 +161,15 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 	logger := logging.Extract(ctx)
 	defer wsConn.Close()
 
+	logger.Debug("Starting user to client relay", "id", wsConn.ID)
+
 	for {
 		messageType, data, err := wsConn.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				logger.Error("WebSocket read error", "error", err)
+			} else {
+				logger.Debug("User WebSocket closed normally", "error", err)
 			}
 
 			// Send close notification
@@ -176,12 +180,19 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 			return
 		}
 
+		logger.Debug("Received frame from user WebSocket", 
+			"id", wsConn.ID, 
+			"type", messageType, 
+			"size", len(data),
+			"data", string(data))
+
 		// Forward frame to client
 		frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
 		if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
 			logger.Error("Failed to forward frame to client", "error", err)
 			return
 		}
+		logger.Debug("Forwarded frame to client", "id", wsConn.ID)
 	}
 }
 
@@ -252,14 +263,23 @@ func (x *Server) handleWebSocketUpgradeResponse(resp *model.WebSocketUpgradeResp
 
 // handleWebSocketFrame handles WebSocket frame from client
 func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
+	logger := logging.Default()
+	logger.Debug("Handling WebSocket frame from client", 
+		"id", frame.ConnectionID, 
+		"type", frame.Type, 
+		"size", len(frame.Data),
+		"data", string(frame.Data))
+
 	conn, ok := x.getWebSocketConnection(frame.ConnectionID)
 	if !ok {
+		logger.Warn("No user WebSocket connection found", "id", frame.ConnectionID)
 		return
 	}
 
 	if err := conn.Send(frame.Type, frame.Data); err != nil {
-		logger := logging.Default()
 		logger.Error("Failed to send frame to user WebSocket", "error", err)
+	} else {
+		logger.Debug("Sent frame to user WebSocket", "id", frame.ConnectionID)
 	}
 }
 

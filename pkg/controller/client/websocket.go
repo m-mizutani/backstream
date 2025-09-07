@@ -170,11 +170,15 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 	defer x.removeLocalWebSocketConnection(localConn.ID)
 	defer localConn.Close()
 
+	logger.Debug("Starting local to server relay", "id", localConn.ID)
+
 	for {
 		messageType, data, err := localConn.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				logger.Error("Local WebSocket read error", "error", err)
+			} else {
+				logger.Debug("Local WebSocket closed normally", "error", err)
 			}
 
 			// Send close notification
@@ -185,12 +189,19 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 			return
 		}
 
+		logger.Debug("Received frame from local WebSocket", 
+			"id", localConn.ID, 
+			"type", messageType, 
+			"size", len(data),
+			"data", string(data))
+
 		// Forward frame to server
 		frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
 		if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
 			logger.Error("Failed to forward frame to server", "error", err)
 			return
 		}
+		logger.Debug("Forwarded frame to server", "id", localConn.ID)
 	}
 }
 
@@ -208,14 +219,23 @@ func (x *Client) relayServerToLocal(ctx context.Context, localConn *LocalWebSock
 
 // handleWebSocketFrame handles WebSocket frame from server
 func (x *Client) handleWebSocketFrame(frame *model.WebSocketFrame) {
+	logger := logging.Default()
+	logger.Debug("Handling WebSocket frame from server", 
+		"id", frame.ConnectionID, 
+		"type", frame.Type, 
+		"size", len(frame.Data),
+		"data", string(frame.Data))
+
 	conn, ok := x.getLocalWebSocketConnection(frame.ConnectionID)
 	if !ok {
+		logger.Warn("No local WebSocket connection found", "id", frame.ConnectionID)
 		return
 	}
 
 	if err := conn.Send(frame.Type, frame.Data); err != nil {
-		logger := logging.Default()
 		logger.Error("Failed to send frame to local WebSocket", "error", err)
+	} else {
+		logger.Debug("Sent frame to local WebSocket", "id", frame.ConnectionID)
 	}
 }
 
