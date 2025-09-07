@@ -11,7 +11,7 @@ import (
 
 const (
 	// channelBufferSize is a buffer size of request channel. It's required to avoid blocking when WebSocket server is slow and disconnected.
-	channelBufferSize = 32
+	channelBufferSize = 128
 )
 
 type Service struct {

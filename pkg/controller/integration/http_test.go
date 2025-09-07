@@ -104,9 +104,14 @@ func TestHTTPProxy(t *testing.T) {
 	// Clean shutdown
 	cancel()
 	select {
-	case <-clientDone:
-		t.Logf("Client shutdown cleanly")
+	case err := <-clientDone:
+		if err != nil && err != context.Canceled {
+			t.Logf("Client shutdown with error: %v", err)
+		} else {
+			t.Logf("Client shutdown cleanly")
+		}
 	case <-time.After(2 * time.Second):
-		t.Logf("Client shutdown timeout")
+		// Client shutdown timeout is not a critical error
+		t.Logf("Client shutdown timeout (non-critical)")
 	}
 }
