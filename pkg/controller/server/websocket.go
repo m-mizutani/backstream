@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/m-mizutani/backstream/pkg/model"
@@ -173,35 +175,61 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 	logger.Debug("Starting user to client relay", "id", wsConn.ID)
 
 	for {
-		messageType, data, err := wsConn.Conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				logger.Error("WebSocket read error", "error", err)
-			} else {
-				logger.Debug("User WebSocket closed normally", "error", err)
-			}
-
-			// Send close notification
-			closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseAbnormalClosure, err.Error())
-			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
-				logger.Error("Failed to broadcast close notification", "error", err)
-			}
+		select {
+		case <-ctx.Done():
+			logger.Debug("WebSocket context cancelled, closing relay", "id", wsConn.ID)
 			return
-		}
+		default:
+			// Set read deadline to avoid blocking forever
+			wsConn.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			messageType, data, err := wsConn.Conn.ReadMessage()
+			
+			// Check if this is a timeout error due to context cancellation
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					// Check if context is done - if so, this is expected
+					select {
+					case <-ctx.Done():
+						logger.Debug("WebSocket read timeout due to context cancellation", "id", wsConn.ID)
+						return
+					default:
+						// Real timeout, continue
+						continue
+					}
+				}
+				
+				// Real error occurred
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					logger.Error("WebSocket read error", "error", err)
+				} else {
+					logger.Debug("User WebSocket closed normally", "error", err)
+				}
 
-		logger.Debug("Received frame from user WebSocket", 
-			"id", wsConn.ID, 
-			"type", messageType, 
-			"size", len(data),
-			"data", string(data))
+				// Send close notification only for real errors
+				closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseAbnormalClosure, err.Error())
+				if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
+					logger.Error("Failed to broadcast close notification", "error", err)
+				}
+				return
+			}
+			
+			// Clear read deadline for successful read
+			wsConn.Conn.SetReadDeadline(time.Time{})
 
-		// Forward frame to client
-		frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
-		if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
-			logger.Error("Failed to forward frame to client", "error", err)
-			return
+			logger.Debug("Received frame from user WebSocket", 
+				"id", wsConn.ID, 
+				"type", messageType, 
+				"size", len(data),
+				"data", string(data))
+
+			// Forward frame to client
+			frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
+			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+				logger.Error("Failed to forward frame to client", "error", err)
+				return
+			}
+			logger.Debug("Forwarded frame to client", "id", wsConn.ID)
 		}
-		logger.Debug("Forwarded frame to client", "id", wsConn.ID)
 	}
 }
 

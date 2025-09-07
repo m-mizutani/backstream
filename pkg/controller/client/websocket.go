@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -167,8 +168,9 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 	}
 
 	return &LocalWebSocketConnection{
-		ID:   req.ID,
-		Conn: conn,
+		ID:     req.ID,
+		Conn:   conn,
+		cancel: nil, // Will be set by caller
 	}, responseHeaders, nil
 }
 
@@ -181,35 +183,61 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 	logger.Info("Starting local to server relay", "id", localConn.ID)
 
 	for {
-		messageType, data, err := localConn.Conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				logger.Error("Local WebSocket read error", "error", err)
-			} else {
-				logger.Debug("Local WebSocket closed normally", "error", err)
-			}
-
-			// Send close notification
-			closeMsg := model.NewWebSocketClose(localConn.ID, websocket.CloseAbnormalClosure, err.Error())
-			if err := x.sendWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
-				logger.Error("Failed to send close notification", "error", err)
-			}
+		select {
+		case <-ctx.Done():
+			logger.Debug("Local WebSocket context cancelled, closing relay", "id", localConn.ID)
 			return
-		}
+		default:
+			// Set read deadline to avoid blocking forever
+			localConn.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			messageType, data, err := localConn.Conn.ReadMessage()
+			
+			// Check if this is a timeout error due to context cancellation
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					// Check if context is done - if so, this is expected
+					select {
+					case <-ctx.Done():
+						logger.Debug("Local WebSocket read timeout due to context cancellation", "id", localConn.ID)
+						return
+					default:
+						// Real timeout, continue
+						continue
+					}
+				}
+				
+				// Real error occurred
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					logger.Error("Local WebSocket read error", "error", err)
+				} else {
+					logger.Debug("Local WebSocket closed normally", "error", err)
+				}
 
-		logger.Info("Received frame from local WebSocket", 
-			"id", localConn.ID, 
-			"type", messageType, 
-			"size", len(data),
-			"data", string(data))
+				// Send close notification only for real errors
+				closeMsg := model.NewWebSocketClose(localConn.ID, websocket.CloseAbnormalClosure, err.Error())
+				if err := x.sendWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
+					logger.Error("Failed to send close notification", "error", err)
+				}
+				return
+			}
+			
+			// Clear read deadline for successful read
+			localConn.Conn.SetReadDeadline(time.Time{})
 
-		// Forward frame to server
-		frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
-		if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
-			logger.Error("Failed to forward frame to server", "error", err)
-			return
+			logger.Info("Received frame from local WebSocket", 
+				"id", localConn.ID, 
+				"type", messageType, 
+				"size", len(data),
+				"data", string(data))
+
+			// Forward frame to server
+			frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
+			if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+				logger.Error("Failed to forward frame to server", "error", err)
+				return
+			}
+			logger.Info("Forwarded frame to server", "id", localConn.ID)
 		}
-		logger.Info("Forwarded frame to server", "id", localConn.ID)
 	}
 }
 
