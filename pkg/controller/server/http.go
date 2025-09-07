@@ -250,6 +250,7 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Try to parse as WebSocket message first
 			var wsMsg model.WebSocketMessage
 			if err := json.Unmarshal(message, &wsMsg); err == nil && wsMsg.Type != "" {
+				logger.Debug("Received WebSocket message from client", "type", wsMsg.Type)
 				// Handle WebSocket message responses
 				switch wsMsg.Type {
 				case model.MessageTypeWebSocketUpgradeResponse:

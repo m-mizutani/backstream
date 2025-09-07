@@ -170,7 +170,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 	defer x.removeLocalWebSocketConnection(localConn.ID)
 	defer localConn.Close()
 
-	logger.Debug("Starting local to server relay", "id", localConn.ID)
+	logger.Info("Starting local to server relay", "id", localConn.ID)
 
 	for {
 		messageType, data, err := localConn.Conn.ReadMessage()
@@ -189,7 +189,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 			return
 		}
 
-		logger.Debug("Received frame from local WebSocket", 
+		logger.Info("Received frame from local WebSocket", 
 			"id", localConn.ID, 
 			"type", messageType, 
 			"size", len(data),
@@ -201,7 +201,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 			logger.Error("Failed to forward frame to server", "error", err)
 			return
 		}
-		logger.Debug("Forwarded frame to server", "id", localConn.ID)
+		logger.Info("Forwarded frame to server", "id", localConn.ID)
 	}
 }
 
@@ -211,7 +211,7 @@ func (x *Client) relayServerToLocal(ctx context.Context, localConn *LocalWebSock
 
 	// This function waits for frames from the server
 	// The actual frame handling is done in handleWebSocketFrame
-	logger.Debug("Starting server to local relay", "id", localConn.ID)
+	logger.Info("Starting server to local relay", "id", localConn.ID)
 
 	// Keep the goroutine alive
 	<-ctx.Done()
@@ -220,7 +220,7 @@ func (x *Client) relayServerToLocal(ctx context.Context, localConn *LocalWebSock
 // handleWebSocketFrame handles WebSocket frame from server
 func (x *Client) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	logger := logging.Default()
-	logger.Debug("Handling WebSocket frame from server", 
+	logger.Info("Handling WebSocket frame from server", 
 		"id", frame.ConnectionID, 
 		"type", frame.Type, 
 		"size", len(frame.Data),
@@ -235,7 +235,7 @@ func (x *Client) handleWebSocketFrame(frame *model.WebSocketFrame) {
 	if err := conn.Send(frame.Type, frame.Data); err != nil {
 		logger.Error("Failed to send frame to local WebSocket", "error", err)
 	} else {
-		logger.Debug("Sent frame to local WebSocket", "id", frame.ConnectionID)
+		logger.Info("Sent frame to local WebSocket", "id", frame.ConnectionID)
 	}
 }
 

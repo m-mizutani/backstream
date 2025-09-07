@@ -205,6 +205,7 @@ func parsePathAndQuery(fullPath string) (path string, query string) {
 // handleWebSocketMessage handles WebSocket messages from the server
 func (x *Client) handleWebSocketMessage(ctx context.Context, wsMsg *model.WebSocketMessage) {
 	logger := logging.Extract(ctx)
+	logger.Debug("Received WebSocket message from server", "type", wsMsg.Type)
 
 	switch wsMsg.Type {
 	case model.MessageTypeWebSocketUpgradeRequest:
