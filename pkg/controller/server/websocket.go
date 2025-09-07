@@ -174,6 +174,13 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 
 	logger.Debug("Starting user to client relay", "id", wsConn.ID)
 
+	// Add panic recovery to handle gorilla/websocket panics
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Panic in relayUserToClient", "error", r, "id", wsConn.ID)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -198,7 +205,7 @@ func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnect
 					}
 				}
 				
-				// Real error occurred
+				// Any read error should terminate the relay to avoid panic
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					logger.Error("WebSocket read error", "error", err)
 				} else {

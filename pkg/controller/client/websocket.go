@@ -182,6 +182,13 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 
 	logger.Info("Starting local to server relay", "id", localConn.ID)
 
+	// Add panic recovery to handle gorilla/websocket panics
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Panic in relayLocalToServer", "error", r, "id", localConn.ID)
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -206,7 +213,7 @@ func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSock
 					}
 				}
 				
-				// Real error occurred
+				// Any read error should terminate the relay to avoid panic
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					logger.Error("Local WebSocket read error", "error", err)
 				} else {
