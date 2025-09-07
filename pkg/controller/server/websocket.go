@@ -27,6 +27,9 @@ type WebSocketConnection struct {
 func (wc *WebSocketConnection) Send(messageType int, data []byte) error {
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
+	if wc.Conn == nil {
+		return goerr.New("connection not established")
+	}
 	return wc.Conn.WriteMessage(messageType, data)
 }
 
@@ -35,7 +38,10 @@ func (wc *WebSocketConnection) Close() error {
 	if wc.cancel != nil {
 		wc.cancel()
 	}
-	return wc.Conn.Close()
+	if wc.Conn != nil {
+		return wc.Conn.Close()
+	}
+	return nil
 }
 
 // isWebSocketUpgrade checks if the request is a WebSocket upgrade request
@@ -103,6 +109,16 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create a temporary connection entry BEFORE sending request to avoid race condition
+	// This ensures the connection is registered before client can send frames
+	wsCtx, wsCancel := context.WithCancel(context.Background())
+	tempConn := &WebSocketConnection{
+		ID:     upgradeReq.ID,
+		Conn:   nil, // Will be set after upgrade
+		cancel: wsCancel,
+	}
+	x.addWebSocketConnection(upgradeReq.ID, tempConn)
+
 	// Send to hub and wait for response
 	respChan := make(chan *model.WebSocketUpgradeResponse, 1)
 	x.registerUpgradeRequest(upgradeReq.ID, respChan)
@@ -110,6 +126,7 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	if err := x.svc.Broadcast(msgData); err != nil {
 		logger.Error("Failed to broadcast upgrade request", "error", err)
+		x.removeWebSocketConnection(upgradeReq.ID) // Clean up on failure
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -122,6 +139,7 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 	case resp := <-respChan:
 		if !resp.Accepted {
 			logger.Error("WebSocket upgrade rejected by client", "error", resp.Error)
+			x.removeWebSocketConnection(upgradeReq.ID) // Clean up on rejection
 			http.Error(w, "upgrade rejected", http.StatusBadGateway)
 			return
 		}
@@ -131,15 +149,6 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		if resp.Header != nil {
 			responseHeader = http.Header(resp.Header)
 		}
-		
-		// Create a temporary connection entry before upgrade to avoid race condition
-		wsCtx, wsCancel := context.WithCancel(context.Background())
-		tempConn := &WebSocketConnection{
-			ID:     upgradeReq.ID,
-			Conn:   nil, // Will be set after upgrade
-			cancel: wsCancel,
-		}
-		x.addWebSocketConnection(upgradeReq.ID, tempConn)
 		
 		// Upgrade the connection with response headers
 		conn, err := x.upgrade(w, r, responseHeader)
@@ -155,11 +164,19 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		logger.Info("WebSocket connection established", "id", upgradeReq.ID)
 
 		// Start relaying messages from the user to the backstream client
-		// Run synchronously to keep the HTTP handler alive until WebSocket is closed
-		x.relayUserToClient(wsCtx, tempConn)
+		// Run in goroutine to avoid blocking while keeping handler alive
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			x.relayUserToClient(wsCtx, tempConn)
+		}()
+		
+		// Wait for WebSocket to complete
+		<-done
 
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")
+		x.removeWebSocketConnection(upgradeReq.ID) // Clean up on timeout
 		http.Error(w, "upgrade timeout", http.StatusGatewayTimeout)
 		return
 	}
@@ -330,10 +347,17 @@ func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 		return
 	}
 
-	// Check if connection is still being established
+	// Wait briefly for connection to be fully established if needed
 	if conn.Conn == nil {
-		logger.Warn("WebSocket connection not yet fully established, dropping frame", "id", frame.ConnectionID)
-		return
+		// Connection is registered but upgrade not complete yet
+		// Wait a short time for the upgrade to complete
+		for i := 0; i < 10 && conn.Conn == nil; i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if conn.Conn == nil {
+			logger.Warn("WebSocket connection not established after waiting", "id", frame.ConnectionID)
+			return
+		}
 	}
 
 	logger.Info("Found WebSocket connection, sending frame", "id", frame.ConnectionID)
