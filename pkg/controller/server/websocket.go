@@ -21,6 +21,8 @@ type WebSocketConnection struct {
 	cancel       context.CancelFunc
 	closed       bool
 	pendingFrames []pendingFrame
+	// Channels for pump goroutines
+	sendChan     chan pendingFrame
 }
 
 type pendingFrame struct {
@@ -47,36 +49,22 @@ func (wc *WebSocketConnection) Send(messageType int, data []byte) error {
 		return nil
 	}
 	
-	err := wc.Conn.WriteMessage(messageType, data)
-	if err != nil {
-		// Mark as closed on write error to prevent future attempts
-		wc.closed = true
-		return err
+	// Send through the write pump channel instead of direct write
+	frame := pendingFrame{
+		messageType: messageType,
+		data:        make([]byte, len(data)),
 	}
-	return nil
+	copy(frame.data, data)
+	
+	select {
+	case wc.sendChan <- frame:
+		return nil
+	default:
+		// Channel is full, this is an error condition
+		return goerr.New("send channel is full")
+	}
 }
 
-// flushPendingFrames sends all queued frames after connection establishment
-func (wc *WebSocketConnection) flushPendingFrames() error {
-	// This should be called with mutex already held
-	if wc.Conn == nil || len(wc.pendingFrames) == 0 {
-		return nil
-	}
-	
-	logger := logging.Default()
-	logger.Debug("Flushing pending frames", "id", wc.ID, "count", len(wc.pendingFrames))
-	
-	for _, frame := range wc.pendingFrames {
-		if err := wc.Conn.WriteMessage(frame.messageType, frame.data); err != nil {
-			wc.closed = true
-			return err
-		}
-	}
-	
-	// Clear pending frames
-	wc.pendingFrames = nil
-	return nil
-}
 
 // Close closes the WebSocket connection
 func (wc *WebSocketConnection) Close() error {
@@ -91,6 +79,11 @@ func (wc *WebSocketConnection) Close() error {
 	
 	// Clear pending frames
 	wc.pendingFrames = nil
+	
+	// Close the send channel to signal write pump to stop
+	if wc.sendChan != nil {
+		close(wc.sendChan)
+	}
 	
 	if wc.cancel != nil {
 		wc.cancel()
@@ -174,9 +167,10 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 	// This ensures the connection is registered before client can send frames
 	wsCtx, wsCancel := context.WithCancel(context.Background())
 	tempConn := &WebSocketConnection{
-		ID:     upgradeReq.ID,
-		Conn:   nil, // Will be set after upgrade
-		cancel: wsCancel,
+		ID:       upgradeReq.ID,
+		Conn:     nil, // Will be set after upgrade
+		cancel:   wsCancel,
+		sendChan: make(chan pendingFrame, 256), // Buffered channel for queued messages
 	}
 	x.addWebSocketConnection(upgradeReq.ID, tempConn)
 
@@ -233,13 +227,21 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		tempConn.mu.Lock()
 		tempConn.Conn = conn
 		
+		// Start the write pump goroutine BEFORE flushing pending frames
+		// This ensures all pending frames are processed through the pump
+		go x.writePump(wsCtx, tempConn)
+		
 		// Send any frames that were queued before connection establishment
-		if err := tempConn.flushPendingFrames(); err != nil {
-			tempConn.mu.Unlock()
-			logger.Error("Failed to flush pending frames", "error", err, "id", upgradeReq.ID)
-			x.removeWebSocketConnection(upgradeReq.ID)
-			return
+		// Now they go through the write pump instead of direct write
+		for _, frame := range tempConn.pendingFrames {
+			select {
+			case tempConn.sendChan <- frame:
+				logger.Debug("Queued pending frame to write pump", "id", upgradeReq.ID)
+			default:
+				logger.Error("Write pump channel full, dropping frame", "id", upgradeReq.ID)
+			}
 		}
+		tempConn.pendingFrames = nil // Clear pending frames after queueing
 		tempConn.mu.Unlock()
 
 		// Log negotiated subprotocol after upgrade
@@ -277,9 +279,17 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 		// WebSocket connection is now ready for transparent proxying
 		// No initial handshake needed - let the actual WebSocket communication flow through
 
-		// Start relaying messages from the user to the backstream client
-		// Handler must block to keep WebSocket connection alive
-		x.relayUserToClient(wsCtx, tempConn)
+		// Start the read pump in a goroutine
+		// The handler blocks here waiting for context cancellation
+		go x.readPump(wsCtx, tempConn)
+		
+		// Block until context is cancelled
+		<-wsCtx.Done()
+		logger.Debug("WebSocket context cancelled", "id", upgradeReq.ID)
+		
+		// Clean up
+		tempConn.Close()
+		x.removeWebSocketConnection(upgradeReq.ID)
 
 	case <-ctx.Done():
 		logger.Error("WebSocket upgrade timeout")
@@ -289,139 +299,140 @@ func (x *Server) handleUserWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// relayUserToClient relays messages from user to client
-func (x *Server) relayUserToClient(ctx context.Context, wsConn *WebSocketConnection) {
+// readPump reads messages from the WebSocket connection and forwards them to the client
+func (x *Server) readPump(ctx context.Context, wsConn *WebSocketConnection) {
 	logger := logging.Extract(ctx)
-	defer wsConn.Close()
-	defer x.removeWebSocketConnection(wsConn.ID)
+	defer func() {
+		if wsConn.cancel != nil {
+			wsConn.cancel() // Cancel context to stop write pump
+		}
+	}()
 
-	logger.Debug("Starting user to client relay", "id", wsConn.ID)
+	logger.Debug("Starting read pump", "id", wsConn.ID)
 
 	// Add panic recovery to handle gorilla/websocket panics
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Error("Panic in relayUserToClient", "error", r, "id", wsConn.ID)
+			logger.Error("Panic in readPump", "error", r, "id", wsConn.ID)
 		}
 	}()
 
-	// Track if this is the first read attempt after flushing pending frames
-	// Vite HMR client may close connection immediately after receiving "connected" message
-	firstRead := true
-
 	for {
+		// Check if context is cancelled
 		select {
 		case <-ctx.Done():
-			logger.Debug("WebSocket context cancelled, closing relay", "id", wsConn.ID)
+			logger.Debug("Read pump context cancelled", "id", wsConn.ID)
 			return
 		default:
-			// Check if connection is closed before attempting read
+		}
+
+		// Read message from WebSocket
+		messageType, data, err := wsConn.Conn.ReadMessage()
+		
+		if err != nil {
+			// Mark connection as closed
 			wsConn.mu.Lock()
-			if wsConn.closed || wsConn.Conn == nil {
-				wsConn.mu.Unlock()
-				logger.Debug("WebSocket connection already closed, terminating relay", "id", wsConn.ID)
-				return
-			}
+			wsConn.closed = true
 			wsConn.mu.Unlock()
 			
-			// No read deadline for development tool - let it block
-			messageType, data, err := wsConn.Conn.ReadMessage()
-			
-			if err != nil {
-				// Special handling for first read after connection establishment
-				// Vite HMR client sometimes immediately closes after receiving "connected" message
-				if firstRead && websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
-					logger.Debug("Ignoring first read EOF (common with Vite HMR)", "error", err, "id", wsConn.ID)
-					firstRead = false
-					// Try to continue - the connection might actually be fine
-					// Don't mark as closed yet
-					continue
-				}
-				firstRead = false
-				
-				// Mark connection as closed only after determining it's a real error
-				wsConn.mu.Lock()
-				wsConn.closed = true
-				wsConn.mu.Unlock()
-				
-				// Check if this is a normal close
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					logger.Debug("User WebSocket closed normally", "id", wsConn.ID)
-					// Forward normal close to client
-					closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseNormalClosure, "connection closed")
-					if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
-						logger.Error("Failed to broadcast close notification", "error", err)
-					}
-					return
-				}
-				
-				// For development tool, log all errors but don't try to recover from abnormal closure
-				// as it usually means the connection is truly broken
-				if websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
-					logger.Debug("WebSocket abnormal closure", "error", err, "id", wsConn.ID)
-				}
-				
-				// Log unexpected errors
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-					logger.Error("WebSocket unexpected read error", "error", err, "id", wsConn.ID)
-				} else {
-					logger.Debug("WebSocket read error", "error", err, "id", wsConn.ID)
-				}
-
-				// Send close notification for fatal errors
-				closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseAbnormalClosure, err.Error())
+			// Check if this is a normal close
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				logger.Debug("User WebSocket closed normally", "id", wsConn.ID)
+				// Forward normal close to client
+				closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseNormalClosure, "connection closed")
 				if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
 					logger.Error("Failed to broadcast close notification", "error", err)
 				}
 				return
 			}
-			firstRead = false
 			
-			// No read deadline management needed for development tool
-
-			logger.Debug("Received frame from user WebSocket", 
-				"id", wsConn.ID, 
-				"type", messageType, 
-				"size", len(data),
-				"data", string(data))
-
-			// Handle WebSocket control frames according to RFC 6455
-			// For a WebSocket proxy, we should transparently forward control frames
-			switch messageType {
-			case websocket.CloseMessage:
-				// Handle close frame according to RFC 6455
-				logger.Debug("Received close frame from user", "id", wsConn.ID)
-				// Forward close message to client and terminate connection
-				frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
-				if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
-					logger.Error("Failed to forward close frame to client", "error", err)
-				}
-				return
-			
-			case websocket.PingMessage, websocket.PongMessage:
-				// Ping/pong frames are now handled by SetPingHandler/SetPongHandler
-				// This should not be reached anymore
-				logger.Warn("Unexpected ping/pong frame in ReadMessage loop", "id", wsConn.ID, "type", messageType)
+			// Log errors
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				logger.Error("WebSocket unexpected read error", "error", err, "id", wsConn.ID)
+			} else {
+				logger.Debug("WebSocket read error", "error", err, "id", wsConn.ID)
 			}
 
-			// Handle application-level protocol control messages for text frames
-			if messageType == websocket.TextMessage {
-				if handled, err := x.handleProtocolControlMessage(wsConn, data); err != nil {
-					logger.Error("Failed to handle protocol control message", "error", err, "id", wsConn.ID)
-					return
-				} else if handled {
-					// Message was handled as a control message, don't forward to client
-					continue
-				}
+			// Send close notification
+			closeMsg := model.NewWebSocketClose(wsConn.ID, websocket.CloseAbnormalClosure, err.Error())
+			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
+				logger.Error("Failed to broadcast close notification", "error", err)
 			}
+			return
+		}
 
-			// Forward data frame to client
-			logger.Debug("About to forward frame to client", "id", wsConn.ID, "type", messageType)
+		logger.Debug("Received frame from user WebSocket", 
+			"id", wsConn.ID, 
+			"type", messageType, 
+			"size", len(data),
+			"data", string(data))
+
+		// Handle WebSocket control frames
+		switch messageType {
+		case websocket.CloseMessage:
+			logger.Debug("Received close frame from user", "id", wsConn.ID)
+			// Forward close message to client and terminate
 			frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
 			if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
-				logger.Error("Failed to forward frame to client", "error", err)
+				logger.Error("Failed to forward close frame to client", "error", err)
+			}
+			return
+		
+		case websocket.PingMessage, websocket.PongMessage:
+			// These should be handled by SetPingHandler/SetPongHandler
+			logger.Warn("Unexpected ping/pong frame in ReadMessage loop", "id", wsConn.ID, "type", messageType)
+		}
+
+		// Handle application-level protocol control messages for text frames
+		if messageType == websocket.TextMessage {
+			if handled, err := x.handleProtocolControlMessage(wsConn, data); err != nil {
+				logger.Error("Failed to handle protocol control message", "error", err, "id", wsConn.ID)
+				return
+			} else if handled {
+				// Message was handled as a control message, don't forward to client
+				continue
+			}
+		}
+
+		// Forward data frame to client
+		logger.Debug("Forwarding frame to client", "id", wsConn.ID, "type", messageType)
+		frame := model.NewWebSocketFrame(wsConn.ID, messageType, data)
+		if err := x.broadcastWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+			logger.Error("Failed to forward frame to client", "error", err)
+			return
+		}
+	}
+}
+
+// writePump writes messages from the send channel to the WebSocket connection
+func (x *Server) writePump(ctx context.Context, wsConn *WebSocketConnection) {
+	logger := logging.Extract(ctx)
+	defer func() {
+		wsConn.Close()
+	}()
+
+	logger.Debug("Starting write pump", "id", wsConn.ID)
+
+	// Add panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Panic in writePump", "error", r, "id", wsConn.ID)
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Debug("Write pump context cancelled", "id", wsConn.ID)
+			return
+			
+		case frame := <-wsConn.sendChan:
+			// Write message to WebSocket
+			if err := wsConn.Conn.WriteMessage(frame.messageType, frame.data); err != nil {
+				logger.Error("Failed to write message", "error", err, "id", wsConn.ID)
 				return
 			}
-			logger.Debug("Forwarded frame to client", "id", wsConn.ID, "type", messageType)
+			logger.Debug("Wrote frame to WebSocket", "id", wsConn.ID, "type", frame.messageType)
 		}
 	}
 }

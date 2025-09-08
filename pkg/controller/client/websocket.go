@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,28 +17,57 @@ import (
 
 // LocalWebSocketConnection represents a connection to local WebSocket endpoint
 type LocalWebSocketConnection struct {
-	ID     string
-	Conn   *websocket.Conn
-	mu     sync.Mutex
-	cancel context.CancelFunc
+	ID       string
+	Conn     *websocket.Conn
+	mu       sync.Mutex
+	cancel   context.CancelFunc
+	closed   bool
+	sendChan chan sendFrame
+}
+
+type sendFrame struct {
+	messageType int
+	data        []byte
 }
 
 // Send sends a message through the local WebSocket connection
 func (lc *LocalWebSocketConnection) Send(messageType int, data []byte) error {
 	lc.mu.Lock()
-	defer lc.mu.Unlock()
-	
-	if lc.Conn == nil {
+	if lc.closed || lc.Conn == nil {
+		lc.mu.Unlock()
 		return goerr.New("connection is closed")
 	}
+	lc.mu.Unlock()
 	
-	return lc.Conn.WriteMessage(messageType, data)
+	// Send through the write pump channel
+	frame := sendFrame{
+		messageType: messageType,
+		data:        make([]byte, len(data)),
+	}
+	copy(frame.data, data)
+	
+	select {
+	case lc.sendChan <- frame:
+		return nil
+	default:
+		return goerr.New("send channel is full")
+	}
 }
 
 // Close closes the local WebSocket connection
 func (lc *LocalWebSocketConnection) Close() error {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
+	
+	if lc.closed {
+		return nil
+	}
+	
+	lc.closed = true
+	
+	if lc.sendChan != nil {
+		close(lc.sendChan)
+	}
 	
 	if lc.cancel != nil {
 		lc.cancel()
@@ -78,9 +106,9 @@ func (x *Client) handleWebSocketUpgradeRequest(ctx context.Context, req *model.W
 		// Store the connection
 		x.addLocalWebSocketConnection(req.ID, localConn)
 
-		// Start relay goroutines
-		go x.relayLocalToServer(wsCtx, localConn)
-		go x.relayServerToLocal(wsCtx, localConn)
+		// Start pump goroutines
+		go x.readPumpLocal(wsCtx, localConn)
+		go x.writePumpLocal(wsCtx, localConn)
 
 		// Include response headers from local WebSocket in the response
 		resp = model.NewWebSocketUpgradeResponse(req.ID, true, respHeaders, "")
@@ -199,130 +227,126 @@ func (x *Client) connectToLocalWebSocket(ctx context.Context, req *model.WebSock
 	}
 
 	return &LocalWebSocketConnection{
-		ID:     req.ID,
-		Conn:   conn,
-		cancel: nil, // Will be set by caller
+		ID:       req.ID,
+		Conn:     conn,
+		cancel:   nil, // Will be set by caller
+		sendChan: make(chan sendFrame, 256), // Buffered channel for writes
 	}, responseHeaders, nil
 }
 
-// relayLocalToServer relays messages from local WebSocket to server
-func (x *Client) relayLocalToServer(ctx context.Context, localConn *LocalWebSocketConnection) {
+// readPumpLocal reads messages from local WebSocket and forwards to server
+func (x *Client) readPumpLocal(ctx context.Context, localConn *LocalWebSocketConnection) {
 	logger := logging.Extract(ctx)
 	defer x.removeLocalWebSocketConnection(localConn.ID)
 	defer localConn.Close()
 
-	logger.Info("Starting local to server relay", "id", localConn.ID)
+	logger.Info("Starting local read pump", "id", localConn.ID)
 
 	// Add panic recovery to handle gorilla/websocket panics
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Error("Panic in relayLocalToServer", "error", r, "id", localConn.ID)
+			logger.Error("Panic in readPumpLocal", "error", r, "id", localConn.ID)
 		}
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debug("Local WebSocket context cancelled, closing relay", "id", localConn.ID)
+			logger.Debug("Local read pump context cancelled", "id", localConn.ID)
 			return
 		default:
-			// Check if connection is closed before attempting read
+		}
+		
+		// Read message from local WebSocket
+		messageType, data, err := localConn.Conn.ReadMessage()
+		
+		if err != nil {
+			// Mark connection as closed
 			localConn.mu.Lock()
-			if localConn.Conn == nil {
-				localConn.mu.Unlock()
-				logger.Debug("Local WebSocket connection already closed, terminating relay", "id", localConn.ID)
-				return
-			}
-			conn := localConn.Conn // Get reference while holding lock
+			localConn.closed = true
 			localConn.mu.Unlock()
 			
-			// Set read deadline to avoid blocking forever
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			messageType, data, err := conn.ReadMessage()
-			
-			// Check if this is a timeout error due to context cancellation
-			if err != nil {
-				// Mark connection as closed by setting it to nil to prevent future read attempts
-				localConn.mu.Lock()
-				localConn.Conn = nil
-				localConn.mu.Unlock()
-				
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					// Check if context is done - if so, this is expected
-					select {
-					case <-ctx.Done():
-						logger.Debug("Local WebSocket read timeout due to context cancellation", "id", localConn.ID)
-						return
-					default:
-						// Real timeout, continue
-						continue
-					}
-				}
-				
-				// Any read error should terminate the relay to avoid panic
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					logger.Error("Local WebSocket read error", "error", err)
-				} else {
-					logger.Debug("Local WebSocket closed normally", "error", err)
-				}
-
-				// Send close notification only for real errors
-				closeMsg := model.NewWebSocketClose(localConn.ID, websocket.CloseAbnormalClosure, err.Error())
-				if err := x.sendWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
-					logger.Error("Failed to send close notification", "error", err)
-				}
-				return
-			}
-			
-			// Clear read deadline for successful read
-			conn.SetReadDeadline(time.Time{})
-
-			logger.Debug("Received frame from local WebSocket", 
-				"id", localConn.ID, 
-				"type", messageType, 
-				"size", len(data),
-				"data", string(data))
-
-			// Handle WebSocket control frames according to RFC 6455
-			// For a WebSocket proxy, we should transparently forward control frames
-			switch messageType {
-			case websocket.CloseMessage:
-				// Handle close frame
-				logger.Debug("Received close frame from local WebSocket", "id", localConn.ID)
-				// Forward close message to server and terminate connection
-				frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
-				if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
-					logger.Error("Failed to forward close frame to server", "error", err)
-				}
-				return
-			
-			case websocket.PingMessage, websocket.PongMessage:
-				// Ping/pong frames are now handled by SetPingHandler/SetPongHandler
-				// This should not be reached anymore
-				logger.Warn("Unexpected ping/pong frame in ReadMessage loop", "id", localConn.ID, "type", messageType)
+			// Check if this is a normal close
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				logger.Debug("Local WebSocket closed normally", "id", localConn.ID)
+			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				logger.Error("Local WebSocket read error", "error", err)
+			} else {
+				logger.Debug("Local WebSocket closed", "error", err)
 			}
 
-			// Forward data frame to server
+			// Send close notification
+			closeMsg := model.NewWebSocketClose(localConn.ID, websocket.CloseAbnormalClosure, err.Error())
+			if err := x.sendWebSocketMessage(model.MessageTypeWebSocketClose, closeMsg); err != nil {
+				logger.Error("Failed to send close notification", "error", err)
+			}
+			return
+		}
+
+		logger.Debug("Received frame from local WebSocket", 
+			"id", localConn.ID, 
+			"type", messageType, 
+			"size", len(data),
+			"data", string(data))
+
+		// Handle WebSocket control frames
+		switch messageType {
+		case websocket.CloseMessage:
+			logger.Debug("Received close frame from local WebSocket", "id", localConn.ID)
+			// Forward close message to server and terminate
 			frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
 			if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
-				logger.Error("Failed to forward frame to server", "error", err)
-				return
+				logger.Error("Failed to forward close frame to server", "error", err)
 			}
-			logger.Debug("Forwarded frame to server", "id", localConn.ID)
+			return
+		
+		case websocket.PingMessage, websocket.PongMessage:
+			// These should be handled by SetPingHandler/SetPongHandler
+			logger.Warn("Unexpected ping/pong frame in ReadMessage loop", "id", localConn.ID, "type", messageType)
+		}
+
+		// Forward data frame to server
+		frame := model.NewWebSocketFrame(localConn.ID, messageType, data)
+		if err := x.sendWebSocketMessage(model.MessageTypeWebSocketFrame, frame); err != nil {
+			logger.Error("Failed to forward frame to server", "error", err)
+			return
 		}
 	}
 }
 
-// relayServerToLocal relays messages from server to local WebSocket
-func (x *Client) relayServerToLocal(ctx context.Context, localConn *LocalWebSocketConnection) {
+// writePumpLocal writes messages from the send channel to local WebSocket
+func (x *Client) writePumpLocal(ctx context.Context, localConn *LocalWebSocketConnection) {
 	logger := logging.Extract(ctx)
+	defer localConn.Close()
 
-	// This function waits for frames from the server
-	// The actual frame handling is done in handleWebSocketFrame
-	logger.Info("Starting server to local relay", "id", localConn.ID)
+	logger.Info("Starting local write pump", "id", localConn.ID)
 
-	// Keep the goroutine alive
-	<-ctx.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Panic in writePumpLocal", "error", r, "id", localConn.ID)
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Debug("Local write pump context cancelled", "id", localConn.ID)
+			return
+			
+		case frame, ok := <-localConn.sendChan:
+			if !ok {
+				// Channel closed
+				return
+			}
+			
+			// Write message to local WebSocket
+			if err := localConn.Conn.WriteMessage(frame.messageType, frame.data); err != nil {
+				logger.Error("Failed to write to local WebSocket", "error", err, "id", localConn.ID)
+				return
+			}
+			logger.Debug("Wrote frame to local WebSocket", "id", localConn.ID, "type", frame.messageType)
+		}
+	}
 }
 
 // handleWebSocketFrame handles WebSocket frame from server
