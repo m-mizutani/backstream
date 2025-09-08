@@ -383,16 +383,8 @@ func (x *Server) readPump(ctx context.Context, wsConn *WebSocketConnection) {
 			logger.Warn("Unexpected ping/pong frame in ReadMessage loop", "id", wsConn.ID, "type", messageType)
 		}
 
-		// Handle application-level protocol control messages for text frames
-		if messageType == websocket.TextMessage {
-			if handled, err := x.handleProtocolControlMessage(wsConn, data); err != nil {
-				logger.Error("Failed to handle protocol control message", "error", err, "id", wsConn.ID)
-				return
-			} else if handled {
-				// Message was handled as a control message, don't forward to client
-				continue
-			}
-		}
+		// For transparent WebSocket proxy, forward all application messages without interpretation
+		// This allows the actual WebSocket protocol (like Vite HMR) to be handled by the real server
 
 		// Forward data frame to client
 		logger.Debug("Forwarding frame to client", "id", wsConn.ID, "type", messageType)
@@ -539,48 +531,6 @@ func (x *Server) handleWebSocketFrame(frame *model.WebSocketFrame) {
 }
 
 
-// handleProtocolControlMessage handles protocol-specific control messages
-// Returns (handled, error) - handled=true means the message was processed and should not be forwarded
-func (x *Server) handleProtocolControlMessage(wsConn *WebSocketConnection, data []byte) (bool, error) {
-	logger := logging.Default()
-	
-	// Try to parse as JSON control message
-	var message map[string]any
-	if err := json.Unmarshal(data, &message); err != nil {
-		// Not a JSON message, let it pass through
-		return false, nil
-	}
-	
-	msgType, ok := message["type"].(string)
-	if !ok {
-		// No type field, let it pass through
-		return false, nil
-	}
-	
-	// Handle common control message patterns
-	switch msgType {
-	case "ping":
-		// Respond with pong for ping-pong keepalive pattern
-		logger.Debug("Received ping, responding with pong", "id", wsConn.ID)
-		pongMsg := map[string]any{"type": "pong"}
-		pongData, _ := json.Marshal(pongMsg)
-		
-		if err := wsConn.Send(websocket.TextMessage, pongData); err != nil {
-			return true, err
-		}
-		logger.Debug("Sent pong response", "id", wsConn.ID)
-		return true, nil
-		
-	case "pong":
-		// Acknowledge pong response (no action needed, just don't forward)
-		logger.Debug("Received pong response", "id", wsConn.ID)
-		return true, nil
-		
-	default:
-		// Unknown control message type, let it pass through
-		return false, nil
-	}
-}
 
 
 // handleWebSocketClose handles WebSocket close from client

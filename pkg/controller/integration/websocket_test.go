@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -225,7 +226,7 @@ func startViteHMRServer(t *testing.T) *httptest.Server {
 			return
 		}
 
-		// Keep connection alive and echo messages
+		// Keep connection alive and handle Vite HMR protocol messages
 		for {
 			mt, message, err := conn.ReadMessage()
 			if err != nil {
@@ -234,7 +235,21 @@ func startViteHMRServer(t *testing.T) *httptest.Server {
 			}
 			t.Logf("Vite HMR received: %s", string(message))
 
-			// Echo back
+			// Handle ping/pong as per Vite HMR protocol
+			var msg map[string]interface{}
+			if err := json.Unmarshal(message, &msg); err == nil {
+				if msgType, ok := msg["type"].(string); ok && msgType == "ping" {
+					// Respond with pong
+					pongResponse := `{"type":"pong"}`
+					if err := conn.WriteMessage(mt, []byte(pongResponse)); err != nil {
+						t.Logf("Write error: %v", err)
+						return
+					}
+					continue
+				}
+			}
+			
+			// Echo back other messages
 			if err := conn.WriteMessage(mt, message); err != nil {
 				t.Logf("Write error: %v", err)
 				return
@@ -369,18 +384,24 @@ func TestWebSocketPingPongHandling(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Read first message (ping)
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			// Don't use t.Errorf in goroutines after test completion
-			return
+		// Handle multiple ping/pong cycles like a real Vite HMR server
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var msgData map[string]interface{}
+			if err := json.Unmarshal(msg, &msgData); err == nil {
+				if msgType, ok := msgData["type"].(string); ok && msgType == "ping" {
+					// Send pong response
+					pongResponse := `{"type":"pong"}`
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(pongResponse)); err != nil {
+						return
+					}
+				}
+			}
 		}
-
-		// Verify it's a ping message
-		gt.Value(t, string(msg)).Equal(`{"type":"ping"}`)
-
-		// Send confirmation that we received ping but don't respond
-		// The server should handle ping internally and respond with pong
 	}))
 	defer viteServer.Close()
 
