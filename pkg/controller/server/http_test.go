@@ -8,7 +8,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/m-mizutani/backstream/pkg/service/hub"
 	"github.com/m-mizutani/opaq"
-	"github.com/stretchr/testify/assert"
+	"github.com/m-mizutani/gt"
 )
 
 func TestServer_WebSocket_Auth(t *testing.T) {
@@ -52,7 +52,7 @@ func TestServer_WebSocket_Auth(t *testing.T) {
 			server.ServeHTTP(w, r) // ServeHTTPを使用して内部でhandleWebSocketを呼び出す
 
 			resp := w.Result()
-			assert.Equal(t, tc.expectCode, resp.StatusCode)
+			gt.Value(t, resp.StatusCode).Equal(tc.expectCode)
 		})
 	}
 }
@@ -98,8 +98,8 @@ func TestWithNoClientCode(t *testing.T) {
 			srv.ServeHTTP(w, req)
 
 			// Assertions
-			assert.Equal(t, tc.expectedCode, w.Code)
-			assert.Equal(t, tc.expectedBody, w.Body.String())
+			gt.Value(t, w.Code).Equal(tc.expectedCode)
+			gt.Value(t, w.Body.String()).Equal(tc.expectedBody)
 		})
 	}
 }

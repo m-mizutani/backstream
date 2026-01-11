@@ -1,0 +1,468 @@
+package integration_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/m-mizutani/backstream/pkg/controller/client"
+	"github.com/m-mizutani/backstream/pkg/controller/server"
+	"github.com/m-mizutani/backstream/pkg/service/hub"
+	"github.com/m-mizutani/backstream/pkg/service/tunnel"
+	"github.com/m-mizutani/gt"
+)
+
+// startRealWebSocketServer starts a real WebSocket echo server for testing
+func startRealWebSocketServer(t *testing.T) *httptest.Server {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Failed to upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		// Echo server
+		for {
+			mt, message, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			if err := conn.WriteMessage(mt, message); err != nil {
+				return
+			}
+		}
+	})
+
+	return httptest.NewServer(mux)
+}
+
+func TestWebSocketEndToEnd(t *testing.T) {
+	// 1. Start local WebSocket server
+	localWS := startRealWebSocketServer(t)
+	defer localWS.Close()
+
+	// 2. Start backstream server
+	hubSvc := hub.New()
+	serverHandler := server.New(hubSvc)
+	backstreamServer := httptest.NewServer(serverHandler)
+	defer backstreamServer.Close()
+
+	// 3. Start backstream client in background
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tunnelSvc := tunnel.New(localWS.URL)
+	backstreamClient := client.New(tunnelSvc, backstreamServer.URL, localWS.URL)
+
+	// Start monitoring for connection before starting the client
+	connectionWait := waitForClientConnection(t, backstreamServer.URL)
+
+	clientErr := make(chan error, 1)
+	go func() {
+		clientErr <- backstreamClient.Connect(ctx)
+	}()
+
+	// Wait for client to connect with timeout
+	select {
+	case <-connectionWait:
+		t.Logf("Client connected successfully")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for client to connect")
+	}
+
+	// 4. Connect as end user to backstream server
+	wsURL := "ws" + backstreamServer.URL[4:] + "/ws"
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+	}
+
+	userConn, _, err := dialer.Dial(wsURL, nil)
+	gt.NoError(t, err).Required()
+	defer userConn.Close()
+
+	// 5. Send message and verify echo
+	testMsg := []byte("Hello WebSocket!")
+	err = userConn.WriteMessage(websocket.TextMessage, testMsg)
+	gt.NoError(t, err).Required()
+
+	// 6. Read echo response with timeout
+	err = userConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gt.NoError(t, err).Required()
+	mt, response, err := userConn.ReadMessage()
+	gt.NoError(t, err).Required()
+	gt.Value(t, mt).Equal(websocket.TextMessage)
+	gt.Value(t, response).Equal(testMsg)
+
+	// Clean shutdown
+	cancel()
+	select {
+	case <-clientErr:
+	case <-time.After(1 * time.Second):
+	}
+}
+
+func TestHTTPAndWebSocketCoexistence(t *testing.T) {
+	// Start HTTP server that also supports WebSocket
+	mux := http.NewServeMux()
+
+	// HTTP endpoint
+	mux.HandleFunc("/api/test", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("HTTP response"))
+	})
+
+	// WebSocket endpoint
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Echo
+		for {
+			mt, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := conn.WriteMessage(mt, msg); err != nil {
+				return
+			}
+		}
+	})
+
+	localServer := httptest.NewServer(mux)
+	defer localServer.Close()
+
+	// Start backstream
+	hubSvc := hub.New()
+	serverHandler := server.New(hubSvc)
+	backstreamServer := httptest.NewServer(serverHandler)
+	defer backstreamServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tunnelSvc := tunnel.New(localServer.URL)
+	backstreamClient := client.New(tunnelSvc, backstreamServer.URL, localServer.URL)
+
+	// Start monitoring for connection before starting the client
+	connectionWait := waitForClientConnection(t, backstreamServer.URL)
+
+	go func() {
+		_ = backstreamClient.Connect(ctx)
+	}()
+
+	// Wait for client to connect with timeout
+	select {
+	case <-connectionWait:
+		t.Logf("Client connected successfully")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for client to connect")
+	}
+
+	// Test HTTP request
+	httpResp, err := http.Get(backstreamServer.URL + "/api/test")
+	gt.NoError(t, err).Required()
+	gt.Value(t, httpResp.StatusCode).Equal(http.StatusOK)
+
+	// Test WebSocket connection
+	wsURL := "ws" + backstreamServer.URL[4:] + "/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	gt.NoError(t, err).Required()
+	defer conn.Close()
+
+	err = conn.WriteMessage(websocket.TextMessage, []byte("test"))
+	gt.NoError(t, err).Required()
+
+	err = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gt.NoError(t, err).Required()
+	_, msg, err := conn.ReadMessage()
+	gt.NoError(t, err).Required()
+	gt.Value(t, msg).Equal([]byte("test"))
+}
+
+// startViteHMRServer simulates a Vite dev server WebSocket endpoint
+func startViteHMRServer(t *testing.T) *httptest.Server {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+		// Accept vite-hmr protocol
+		Subprotocols: []string{"vite-hmr"},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		t.Logf("Vite HMR server received request: %s %s", r.Method, r.URL.Path)
+		t.Logf("Headers: %v", r.Header)
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Failed to upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		t.Logf("Vite HMR connection established, subprotocol: %s", conn.Subprotocol())
+
+		// Send initial connected message like Vite does
+		err = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"connected"}`))
+		if err != nil {
+			t.Logf("Failed to send connected message: %v", err)
+			return
+		}
+
+		// Keep connection alive and handle Vite HMR protocol messages
+		for {
+			mt, message, err := conn.ReadMessage()
+			if err != nil {
+				t.Logf("Read error: %v", err)
+				return
+			}
+			t.Logf("Vite HMR received: %s", string(message))
+
+			// Handle ping/pong as per Vite HMR protocol
+			var msg map[string]interface{}
+			if err := json.Unmarshal(message, &msg); err == nil {
+				if msgType, ok := msg["type"].(string); ok && msgType == "ping" {
+					// Respond with pong
+					pongResponse := `{"type":"pong"}`
+					if err := conn.WriteMessage(mt, []byte(pongResponse)); err != nil {
+						t.Logf("Write error: %v", err)
+						return
+					}
+					continue
+				}
+			}
+			
+			// Echo back other messages
+			if err := conn.WriteMessage(mt, message); err != nil {
+				t.Logf("Write error: %v", err)
+				return
+			}
+		}
+	})
+
+	return httptest.NewServer(mux)
+}
+
+func TestViteHMRProtocolE2E(t *testing.T) {
+	// 1. Start mock Vite HMR server
+	viteServer := startViteHMRServer(t)
+	defer viteServer.Close()
+	t.Logf("Vite HMR server started at: %s", viteServer.URL)
+
+	// 2. Start backstream server
+	hubSvc := hub.New()
+	serverHandler := server.New(hubSvc)
+	backstreamServer := httptest.NewServer(serverHandler)
+	defer backstreamServer.Close()
+	t.Logf("Backstream server started at: %s", backstreamServer.URL)
+
+	// 3. Start backstream client connecting to Vite server
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tunnelSvc := tunnel.New(viteServer.URL)
+	backstreamClient := client.New(tunnelSvc, backstreamServer.URL, viteServer.URL)
+
+	clientErr := make(chan error, 1)
+	go func() {
+		err := backstreamClient.Connect(ctx)
+		if err != nil {
+			t.Logf("Client error: %v", err)
+		}
+		clientErr <- err
+	}()
+
+	// Wait a bit for client to connect
+	time.Sleep(500 * time.Millisecond)
+
+	// 4. Connect as browser with vite-hmr protocol
+	wsURL := "ws" + backstreamServer.URL[4:] + "/"
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+		Subprotocols:     []string{"vite-hmr"}, // Request vite-hmr protocol
+	}
+
+	t.Logf("Connecting to backstream as browser with vite-hmr protocol...")
+	browserConn, resp, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Logf("Dial error: %v", err)
+		if resp != nil {
+			t.Logf("Response status: %s", resp.Status)
+			t.Logf("Response headers: %v", resp.Header)
+		}
+	}
+	gt.NoError(t, err).Required()
+	defer browserConn.Close()
+
+	// 5. Verify subprotocol was negotiated
+	gt.Value(t, browserConn.Subprotocol()).Equal("vite-hmr").Describe("Subprotocol should be vite-hmr")
+	t.Logf("Successfully negotiated subprotocol: %s", browserConn.Subprotocol())
+
+	// 6. Read initial connected message
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gt.NoError(t, err).Required()
+
+	mt, msg, err := browserConn.ReadMessage()
+	gt.NoError(t, err).Required()
+	gt.Value(t, mt).Equal(websocket.TextMessage)
+	gt.Value(t, string(msg)).Equal(`{"type":"connected"}`)
+	t.Logf("Received initial message: %s", string(msg))
+
+	// 7. Send a ping and verify pong response
+	pingMsg := []byte(`{"type":"ping"}`)
+	err = browserConn.WriteMessage(websocket.TextMessage, pingMsg)
+	gt.NoError(t, err).Required()
+	t.Logf("Sent ping message")
+
+	// 8. Read pong response
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gt.NoError(t, err).Required()
+
+	mt, msg, err = browserConn.ReadMessage()
+	gt.NoError(t, err).Required()
+	gt.Value(t, mt).Equal(websocket.TextMessage)
+	expectedPong := []byte(`{"type":"pong"}`)
+	gt.Value(t, msg).Equal(expectedPong)
+	t.Logf("Received pong response: %s", string(msg))
+
+	// 9. Keep connection alive for a bit to ensure it doesn't close
+	time.Sleep(100 * time.Millisecond)
+
+	// Try another regular message to verify connection is still alive
+	testMsg2 := []byte(`{"type":"test"}`)
+	err = browserConn.WriteMessage(websocket.TextMessage, testMsg2)
+	gt.NoError(t, err).Required()
+
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gt.NoError(t, err).Required()
+
+	_, msg, err = browserConn.ReadMessage()
+	gt.NoError(t, err).Required()
+	gt.Value(t, msg).Equal(testMsg2)
+	t.Logf("Connection still alive, received: %s", string(msg))
+
+	// Clean shutdown
+	cancel()
+	select {
+	case err := <-clientErr:
+		if err != nil && err != context.Canceled {
+			t.Logf("Client shutdown with error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		// Client shutdown timeout is not a critical error
+		t.Log("Client shutdown timeout (non-critical)")
+	}
+}
+
+func TestWebSocketPingPongHandling(t *testing.T) {
+	// Test ping/pong control message handling specifically
+	viteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{
+			Subprotocols: []string{"vite-hmr"},
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			// Don't use t.Errorf in goroutines after test completion
+			return
+		}
+		defer conn.Close()
+
+		// Handle multiple ping/pong cycles like a real Vite HMR server
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var msgData map[string]interface{}
+			if err := json.Unmarshal(msg, &msgData); err == nil {
+				if msgType, ok := msgData["type"].(string); ok && msgType == "ping" {
+					// Send pong response
+					pongResponse := `{"type":"pong"}`
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(pongResponse)); err != nil {
+						return
+					}
+				}
+			}
+		}
+	}))
+	defer viteServer.Close()
+
+	// Create backstream server
+	svc := hub.New()
+	backstreamServer := server.New(svc)
+	testBackstreamServer := httptest.NewServer(backstreamServer)
+	defer testBackstreamServer.Close()
+
+	// Start backstream client
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tunnelSvc := tunnel.New(viteServer.URL)
+	clientInstance := client.New(tunnelSvc, testBackstreamServer.URL, viteServer.URL)
+	clientErr := make(chan error, 1)
+	go func() {
+		err := clientInstance.Connect(ctx)
+		if err != nil {
+			t.Logf("Client error: %v", err)
+		}
+		clientErr <- err
+	}()
+
+	// Wait for client connection
+	time.Sleep(100 * time.Millisecond)
+
+	// Connect as browser
+	dialer := websocket.Dialer{
+		Subprotocols: []string{"vite-hmr"},
+	}
+	
+	wsURL := strings.Replace(testBackstreamServer.URL, "http", "ws", 1) + "/"
+	browserConn, resp, err := dialer.Dial(wsURL, nil)
+	gt.NoError(t, err).Required()
+	defer browserConn.Close()
+
+	gt.Value(t, resp.Header.Get("Sec-Websocket-Protocol")).Equal("vite-hmr")
+
+	// Send ping message
+	err = browserConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
+	gt.NoError(t, err).Required()
+
+	// Should receive pong response
+	err = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	gt.NoError(t, err).Required()
+
+	_, msg, err := browserConn.ReadMessage()
+	gt.NoError(t, err).Required()
+	gt.Value(t, string(msg)).Equal(`{"type":"pong"}`)
+
+	// Test multiple ping/pong cycles
+	for i := 0; i < 3; i++ {
+		err = browserConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`))
+		gt.NoError(t, err).Required()
+
+		_, msg, err = browserConn.ReadMessage()
+		gt.NoError(t, err).Required()
+		gt.Value(t, string(msg)).Equal(`{"type":"pong"}`)
+	}
+
+	// Clean shutdown
+	cancel()
+}

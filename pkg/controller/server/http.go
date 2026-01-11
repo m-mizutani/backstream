@@ -6,6 +6,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -16,26 +19,52 @@ import (
 	"github.com/m-mizutani/opaq"
 )
 
+const upgradeTimeout = 10 * time.Second
+
 type Upgrade func(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error)
 
 type Server struct {
-	svc          *hub.Service
-	upgrade      Upgrade
-	policy       *opaq.Client
-	noClientCode int
+	svc              *hub.Service
+	upgrade          Upgrade
+	policy           *opaq.Client
+	noClientCode     int
+	wsConnections    map[string]*WebSocketConnection
+	wsConnectionMu   sync.RWMutex
+	upgradeRequests  map[string]chan *model.WebSocketUpgradeResponse
+	upgradeRequestMu sync.RWMutex
 }
 
 func New(svc *hub.Service, opts ...Option) *Server {
-	var upgrade = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+	// Create a custom upgrade function that accepts any subprotocol
+	upgradeFunc := func(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error) {
+		upgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+			// Large buffer sizes for development tool (10MB each)
+			ReadBufferSize:  10 * 1024 * 1024, // 10MB
+			WriteBufferSize: 10 * 1024 * 1024, // 10MB
+		}
+		
+		// Dynamically set subprotocols based on the request
+		if protocols := r.Header.Get("Sec-WebSocket-Protocol"); protocols != "" {
+			// Accept any protocol the client requests
+			protocolList := strings.Split(protocols, ",")
+			for i, p := range protocolList {
+				protocolList[i] = strings.TrimSpace(p)
+			}
+			upgrader.Subprotocols = protocolList
+		}
+		
+		return upgrader.Upgrade(w, r, responseHeader)
 	}
 
 	x := &Server{
-		svc:          svc,
-		upgrade:      upgrade.Upgrade,
-		noClientCode: 503, // デフォルト値
+		svc:             svc,
+		upgrade:         upgradeFunc,
+		noClientCode:    503, // デフォルト値
+		wsConnections:   make(map[string]*WebSocketConnection),
+		upgradeRequests: make(map[string]chan *model.WebSocketUpgradeResponse),
 	}
 
 	for _, opt := range opts {
@@ -66,8 +95,21 @@ func WithNoClientCode(code int64) Option {
 }
 
 func (x *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Log the raw request details at the very beginning
+	logger := logging.Extract(r.Context())
+	logger.Info("ServeHTTP: incoming request",
+		"method", r.Method,
+		"url.path", r.URL.Path,
+		"url.rawQuery", r.URL.RawQuery,
+		"url.string", r.URL.String(),
+		"requestURI", r.RequestURI,
+		"host", r.Host)
+	
 	if r.Header.Get("Backstream-Client") != "" {
 		x.handleWebSocket(w, r)
+	} else if isWebSocketUpgrade(r) {
+		// Handle end-user WebSocket connections
+		x.handleUserWebSocket(w, r)
 	} else {
 		x.handleHTTP(w, r)
 	}
@@ -83,6 +125,13 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Log the original URL at INFO level to debug production issue
+	logger.Info("handleHTTP: incoming HTTP request URL",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"rawQuery", r.URL.RawQuery,
+		"requestURI", r.RequestURI)
+
 	req, err := model.NewRequest(r)
 	if err != nil {
 		logging.Extract(r.Context()).Error("failed to create request", "error", err)
@@ -90,7 +139,10 @@ func (x *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Debug("received HTTP request", "request", req)
+	logger.Info("handleHTTP: created request model",
+		"id", req.ID,
+		"path", req.Path,
+		"method", req.Method)
 
 	resp, err := x.svc.EmitAndWait(req)
 	if err != nil {
@@ -199,10 +251,12 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	reqCh := x.svc.Join(clientID)
 	defer x.svc.Leave(clientID)
 
-	respCh := make(chan *model.Response)
+	// Also join WebSocket message channel
+	wsMsgCh := x.svc.JoinWebSocket(clientID)
+	defer x.svc.LeaveWebSocket(clientID)
+
 	errCh := make(chan error)
 	go func() {
-		defer close(respCh)
 		defer close(errCh)
 
 		for {
@@ -212,6 +266,42 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Try to parse as WebSocket message first
+			var wsMsg model.WebSocketMessage
+			if err := json.Unmarshal(message, &wsMsg); err == nil && wsMsg.Type != "" {
+				logger.Debug("Received WebSocket message from client", "type", wsMsg.Type)
+				// Handle WebSocket message responses
+				switch wsMsg.Type {
+				case model.MessageTypeWebSocketUpgradeResponse:
+					var resp model.WebSocketUpgradeResponse
+					if err := json.Unmarshal(wsMsg.Data, &resp); err != nil {
+						logger.Error("failed to unmarshal WebSocketUpgradeResponse", "error", err)
+					} else {
+						x.handleWebSocketUpgradeResponse(&resp)
+					}
+				case model.MessageTypeWebSocketFrame:
+					var frame model.WebSocketFrame
+					if err := json.Unmarshal(wsMsg.Data, &frame); err != nil {
+						logger.Error("failed to unmarshal WebSocketFrame", "error", err)
+					} else {
+						x.handleWebSocketFrame(&frame)
+					}
+				case model.MessageTypeWebSocketClose:
+					var close model.WebSocketClose
+					if err := json.Unmarshal(wsMsg.Data, &close); err != nil {
+						logger.Error("failed to unmarshal WebSocketClose", "error", err)
+					} else {
+						x.handleWebSocketClose(&close)
+					}
+				// case model.MessageTypeWebSocketHandshake:
+				//   Handshake functionality removed - not needed for transparent proxying
+				default:
+					logger.Warn("unknown WebSocket message type", "type", wsMsg.Type)
+				}
+				continue
+			}
+
+			// Otherwise handle as regular response
 			var resp model.Response
 			if err := json.Unmarshal(message, &resp); err != nil {
 				errCh <- err
@@ -242,10 +332,15 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				logger.Error("failed to write message", "error", err)
 				return
 			}
-			logger.Info("sent message", "id", req.ID, "method", req.Method, "path", req.Path)
+			// Log the request being sent to client
+			logger.Info("sent request to client", "id", req.ID, "method", req.Method, "path", req.Path)
 
-		case resp := <-respCh:
-			x.svc.PutResponse(resp)
+		case wsMsg := <-wsMsgCh:
+			// Forward WebSocket messages to client
+			if err := ws.WriteMessage(websocket.TextMessage, wsMsg); err != nil {
+				logger.Error("failed to write WebSocket message", "error", err)
+				return
+			}
 
 		case err := <-errCh:
 			logger.Error("failed to read message", "error", err)
@@ -253,3 +348,4 @@ func (x *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
